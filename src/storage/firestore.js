@@ -172,3 +172,76 @@ export function deleteGroupCascade(groupId) {
     })()
   );
 }
+
+// ---------------------------------------------------------------------------
+// Pending command queue (Phase 4)
+//
+// The web app can't reach this service directly (it's behind your work
+// firewall and only runs when you're there), so it writes command documents to
+// Firestore. This service, whenever it's running, picks them up, does the JFE
+// work, and writes status back. Commands queued while the laptop is off wait.
+// ---------------------------------------------------------------------------
+
+// Listen for pending commands. cb receives an array (unordered; the processor
+// sorts by createdAtMs). Single-field filter -> no composite index needed.
+export function subscribePendingCommands(cb, onError) {
+  if (!db) return () => {};
+  return db.collection('commands').where('status', '==', 'pending').onSnapshot(
+    (snap) =>
+      cb(
+        snap.docs.map((d) => {
+          const data = d.data();
+          return { id: d.id, ...data, createdAtMs: data.createdAt?.toMillis?.() ?? 0 };
+        })
+      ),
+    (err) => {
+      logger.warn({ err: err.message }, 'command subscribe failed');
+      onError?.(err);
+    }
+  );
+}
+
+// Atomically claim a pending command (pending -> running). Returns the command
+// if we won the claim, else null (already taken or gone).
+export async function claimCommand(id) {
+  if (!db) return null;
+  const ref = db.collection('commands').doc(id);
+  try {
+    return await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists || snap.data().status !== 'pending') return null;
+      tx.update(ref, { status: 'running', startedAt: FieldValue.serverTimestamp() });
+      return { id, ...snap.data() };
+    });
+  } catch (err) {
+    logger.warn({ err: err.message, id }, 'claimCommand failed');
+    return null;
+  }
+}
+
+export async function completeCommand(id, result) {
+  if (!db) return;
+  await db
+    .collection('commands')
+    .doc(id)
+    .update({
+      status: 'done',
+      finishedAt: FieldValue.serverTimestamp(),
+      result: result ?? null,
+      error: null,
+    })
+    .catch((err) => logger.warn({ err: err.message, id }, 'completeCommand failed'));
+}
+
+export async function failCommand(id, message) {
+  if (!db) return;
+  await db
+    .collection('commands')
+    .doc(id)
+    .update({
+      status: 'error',
+      finishedAt: FieldValue.serverTimestamp(),
+      error: String(message).slice(0, 500),
+    })
+    .catch((err) => logger.warn({ err: err.message, id }, 'failCommand failed'));
+}

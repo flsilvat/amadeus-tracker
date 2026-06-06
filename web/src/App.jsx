@@ -5,8 +5,10 @@ import {
   subscribeGroups, subscribeGroupFlights, MOCK_GROUP, MOCK_FLIGHTS, isDemo,
 } from './lib/data.js';
 import { computeOdds } from './lib/odds.js';
+import { subscribeRecentCommands, enqueueRefreshGroup, enqueueRefreshAll } from './lib/commands.js';
 import Login from './components/Login.jsx';
 import Section from './components/Section.jsx';
+import AddTrip from './components/AddTrip.jsx';
 
 const segBtn = (active) =>
   'px-3 py-1.5 text-xs font-semibold transition ' +
@@ -33,6 +35,14 @@ function Dashboard({ uid, demo, onSignOut }) {
   const [groupId, setGroupId] = useState(demo ? MOCK_GROUP.id : null);
   const [flights, setFlights] = useState(demo ? MOCK_FLIGHTS : []);
   const [err, setErr] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
+  const [commands, setCommands] = useState([]);
+  const [queuedMsg, setQueuedMsg] = useState('');
+
+  useEffect(() => {
+    if (demo) return;
+    return subscribeRecentCommands(setCommands, (e) => setErr(e.message));
+  }, [demo]);
 
   useEffect(() => {
     if (demo) return;
@@ -106,16 +116,43 @@ function Dashboard({ uid, demo, onSignOut }) {
             staff travel odds{demo && <span className="ml-1 text-amber-600 font-semibold">· demo</span>}
           </p>
         </div>
-        {!demo && (
-          <button onClick={onSignOut} className="text-xs text-stone-400 hover:text-stone-600 shrink-0 mt-1">Sign out</button>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {!demo && (
+            <button onClick={() => { setShowAdd((s) => !s); setQueuedMsg(''); }}
+              className="btn-ink rounded-lg px-3 py-1.5 text-xs font-semibold transition">
+              + Add trip
+            </button>
+          )}
+          {!demo && group && (
+            <button onClick={() => { enqueueRefreshGroup(group.id, `Refresh ${group.name}`); setQueuedMsg('Refresh queued.'); }}
+              className="text-xs font-semibold border border-stone-300 rounded-lg px-3 py-1.5 bg-white text-stone-600 hover:bg-stone-50 transition">
+              Refresh
+            </button>
+          )}
+          {!demo && (
+            <button onClick={onSignOut} className="text-xs text-stone-400 hover:text-stone-600">Sign out</button>
+          )}
+        </div>
       </header>
 
       {err && <p className="text-xs text-rose-600 mb-3">{err}</p>}
+      {queuedMsg && <p className="text-xs text-blue-600 mb-3">{queuedMsg} It'll run when your work PC is online.</p>}
+
+      {showAdd && !demo && (
+        <AddTrip onClose={() => setShowAdd(false)} onQueued={(n) => setQueuedMsg(`Queued “${n}”.`)} />
+      )}
+
+      {!demo && commands.length > 0 && <CommandStrip commands={commands} />}
 
       {groups.length === 0 && !demo ? (
         <div className="bg-white rounded-2xl border border-stone-200 p-6 text-sm text-stone-500">
-          No active trips found yet. Create one from your tracker service, or append <code>?demo=1</code> to the URL to preview with sample data.
+          <p className="mb-3">No trips yet. Add one and your work PC will run the lookup next time it's online.</p>
+          {!showAdd && (
+            <button onClick={() => setShowAdd(true)} className="btn-ink rounded-lg px-4 py-2 text-sm font-semibold transition">
+              + Add your first trip
+            </button>
+          )}
+          <p className="mt-3 text-[11px] text-stone-400">Or append <code>?demo=1</code> to the URL to preview with sample data.</p>
         </div>
       ) : (
         <>
@@ -187,6 +224,36 @@ function Dashboard({ uid, demo, onSignOut }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+const CMD_META = {
+  pending: { dot: 'bg-amber-400', text: 'queued' },
+  running: { dot: 'bg-blue-500 animate-pulse', text: 'running…' },
+  done: { dot: 'bg-blue-600', text: 'done' },
+  error: { dot: 'bg-rose-500', text: 'failed' },
+};
+
+function CommandStrip({ commands }) {
+  return (
+    <div className="bg-white rounded-2xl border border-stone-200 p-3 mb-4">
+      <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide mb-2">Activity</div>
+      <ul className="flex flex-col gap-1.5">
+        {commands.map((c) => {
+          const meta = CMD_META[c.status] || CMD_META.pending;
+          return (
+            <li key={c.id} className="flex items-center gap-2 text-xs">
+              <span className={'inline-block w-2 h-2 rounded-full shrink-0 ' + meta.dot} />
+              <span className="text-stone-700 truncate">{c.label}</span>
+              <span className="text-stone-400 shrink-0">{meta.text}</span>
+              {c.status === 'error' && c.error && (
+                <span className="text-rose-500 truncate" title={c.error}>· {c.error}</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
