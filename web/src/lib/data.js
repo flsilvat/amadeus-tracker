@@ -50,11 +50,15 @@ function buildFlight(flightDoc, latestObs) {
   };
 }
 
-// Subscribe to all active groups. cb receives an array of group docs.
+// Subscribe to trips. We read all group docs and filter client-side so trips
+// created before the `active` field existed (older groups) still show — only
+// explicitly archived ones (active === false) are hidden.
 export function subscribeGroups(cb, onError) {
-  const q = query(collection(db, 'groups'), where('active', '==', true));
+  const q = query(collection(db, 'groups'));
   return onSnapshot(q, (snap) => {
-    const groups = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const groups = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((g) => g.active !== false);
     groups.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     cb(groups);
   }, onError);

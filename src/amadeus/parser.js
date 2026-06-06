@@ -30,7 +30,9 @@ const AN_FLIGHT_RE = new RegExp(
   '/([A-Z]{3})\\s+\\S+\\s+' +           // (5) origin + terminal
   '([A-Z]{3})\\s+\\S?\\s*' +            // (6) destination + optional D marker
   '(\\d{4})\\s+' +                      // (7) departure HHMM
-  '(\\d{4})\\s+' +                      // (8) arrival HHMM
+  '(\\d{4})' +                          // (8) arrival HHMM
+  '(?:\\+\\d+)?' +                       // optional +N overnight day offset (e.g. "+1")
+  '\\s*' +                              // optional spacing before equipment
   'E\\d/([A-Z0-9]{3})',                 // (9) equipment
 );
 
@@ -309,4 +311,15 @@ export function sortQueueByPriority(queue) {
   });
   queue.forEach((q, idx) => { q.position = idx + 1; });
   return queue;
+}
+
+// True if an AN/ANBA display contains a connecting itinerary. Connections have a
+// second flight-segment line with NO option number — leading spaces followed by
+// an airline code + 3-4 digit flight number (e.g. "     BA 098 ..."). Direct
+// options carry the option number on their only flight line, and class
+// continuation lines never contain a 3-4 digit flight number, so neither
+// false-positives. Used to stop AN pagination once the direct flights end.
+const CONNECTION_SEGMENT_RE = /^ {2,}[A-Z]{2} ?\d{3,4}\b/m;
+export function hasConnectingItinerary(text) {
+  return CONNECTION_SEGMENT_RE.test(text || '');
 }

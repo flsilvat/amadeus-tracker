@@ -8,7 +8,7 @@
 import { enqueue } from './queue.js';
 import { runCommand, runCommandPaginated } from './amadeus/automator.js';
 import { buildAN, buildLL } from './amadeus/commandBuilder.js';
-import { parseAN, parseLL, sortQueueByPriority } from './amadeus/parser.js';
+import { parseAN, parseLL, sortQueueByPriority, hasConnectingItinerary } from './amadeus/parser.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import {
@@ -43,7 +43,12 @@ export async function createOrUpdateGroupAndDiscover(groupSpec) {
 
     const { response, pages } = await enqueue(
       `AN ${leg.origin}→${leg.destination} ${leg.date}`,
-      () => runCommandPaginated(command, { endMarker: /NO MORE (LATER|EARLIER) FLTS/ })
+      () => runCommandPaginated(command, {
+        endMarker: /NO MORE (LATER|EARLIER) FLTS/,
+        // AN lists direct flights first; once a connecting itinerary appears,
+        // everything after is connections (which we discard), so stop paging.
+        stopWhen: config.AN_STOP_AT_CONNECTIONS ? hasConnectingItinerary : null,
+      })
     );
 
     const { flights } = parseAN(response, { isoDate: leg.date });

@@ -17,6 +17,7 @@ import {
   claimCommand,
   completeCommand,
   failCommand,
+  reclaimStaleCommands,
 } from '../storage/firestore.js';
 
 const HANDLERS = {
@@ -39,6 +40,9 @@ const handled = new Set();
 
 export function startCommandProcessor() {
   logger.info('command processor listening for pending commands');
+  // Recover anything left 'running' by a previous crash/Ctrl-C. The flip to
+  // 'pending' triggers the subscription below, so they resume on their own.
+  reclaimStaleCommands();
   return subscribePendingCommands((cmds) => {
     cmds.sort((a, b) => a.createdAtMs - b.createdAtMs); // oldest first
     for (const cmd of cmds) {

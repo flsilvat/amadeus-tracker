@@ -40,6 +40,23 @@ export function enqueueRefreshAll() {
   return enqueue('refreshAll', {}, 'Refresh all trips');
 }
 
+// Re-run AN discovery for an EXISTING trip to pick up flights missed the first
+// time (e.g. dropped by an NMD earlier). Uses the same trip id, so it upserts —
+// it never duplicates or deletes flights, and leaves loads/queues alone.
+export function enqueueRescan(group) {
+  const g = { id: group.id, name: group.name, outbound: group.outbound };
+  if (group.inbound) g.inbound = group.inbound;
+  if (group.myStfCode) g.myStfCode = group.myStfCode;
+  if (group.myDoj) g.myDoj = group.myDoj;
+  return enqueue('createGroup', { group: g }, `Re-scan ${group.name}`);
+}
+
+// Re-queue a failed or stuck command as a fresh pending one. Re-running is safe:
+// createGroup/refresh upsert by the same id, so no duplicates are created.
+export function reEnqueueCommand(cmd) {
+  return enqueue(cmd.type, cmd.payload || {}, cmd.label || cmd.type);
+}
+
 // Recent commands for this user, newest first (client-sorted -> no index).
 export function subscribeRecentCommands(cb, onError) {
   const uid = auth.currentUser ? auth.currentUser.uid : null;

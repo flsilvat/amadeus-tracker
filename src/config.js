@@ -13,6 +13,19 @@ const schema = z.object({
   MD_SETTLE_MS: z.coerce.number().default(1200),
   // Per-keystroke delay used by nut-js. Higher = more reliable, slightly slower.
   KEYBOARD_AUTO_DELAY_MS: z.coerce.number().default(100),
+  // Wait (ms) after Alt+D opens the Device menu before pressing N (Copy
+  // Content). Too short and N lands in the command line instead of the menu,
+  // which then echoes into the next command (e.g. "MD" -> "NMD").
+  MENU_OPEN_MS: z.coerce.number().default(250),
+  // Wait (ms) after pressing N for the menu to close and the keypress to drain.
+  MENU_SETTLE_MS: z.coerce.number().default(300),
+  // Backspaces sent to wipe the command line before typing each command, as a
+  // safety net against a stray leaked character. Harmless when the line is empty.
+  CLEAR_BACKSPACES: z.coerce.number().default(8),
+  // Stop AN pagination as soon as a connecting itinerary appears. AN lists
+  // direct flights first, so this skips the (discarded) connection pages. Set
+  // to "false" if you ever find a direct flight being missed.
+  AN_STOP_AT_CONNECTIONS: z.enum(['true', 'false']).default('true').transform(v => v === 'true'),
   REFRESH_CRON: z.string().default('*/15 * * * *'),
   KEEPALIVE_SECONDS: z.coerce.number().default(240),
   DB_PATH: z.string().default('./data/tracker.db'),

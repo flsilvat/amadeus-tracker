@@ -37,6 +37,11 @@ export async function runCommand(command, { skipPreflight = false, settleMs } = 
 
   await focusJfeWindow();
 
+  // Wipe any stray characters left in the command line before typing — most
+  // importantly the 'N' from a prior Copy-Content menu that occasionally echoes
+  // into the field and turns the next "MD" into "NMD".
+  await clearCommandLine();
+
   if (!skipPreflight) {
     await tapEnter();
     await sleep(200);
@@ -66,12 +71,21 @@ export async function runCommand(command, { skipPreflight = false, settleMs } = 
 export async function runCommandPaginated(initialCommand, opts = {}) {
   const endMarker = opts.endMarker ?? /END OF DISPLAY/;
   const maxPages = opts.maxPages ?? 20;
+  // Optional early-stop predicate, tested against each page's text. Used by AN
+  // to stop once connecting itineraries begin (direct flights are listed first).
+  const stopWhen = opts.stopWhen ?? null;
+  const reachedEnd = (text) => {
+    if (endMarker.test(text)) return 'end marker';
+    if (stopWhen && stopWhen(text)) return 'stop condition';
+    return null;
+  };
 
   const first = await runCommand(initialCommand);
   const pages = [first.response];
   const seen = new Set([first.response]);   // any previously seen page, not just last
   let pageCount = 1;
-  let hitEnd = endMarker.test(first.response);
+  let endReason = reachedEnd(first.response);
+  let hitEnd = Boolean(endReason);
 
   logger.info(
     { command: initialCommand, page: 1, bytes: first.response.length, hitEnd },
@@ -97,10 +111,11 @@ export async function runCommandPaginated(initialCommand, opts = {}) {
 
     pages.push(next.response);
     pageCount++;
-    hitEnd = endMarker.test(next.response);
+    endReason = reachedEnd(next.response);
+    hitEnd = Boolean(endReason);
 
     logger.info(
-      { page: pageCount, bytes: next.response.length, hitEnd, tail: next.response.slice(-120).replace(/\s+/g, ' ').trim() },
+      { page: pageCount, bytes: next.response.length, hitEnd, reason: endReason, tail: next.response.slice(-120).replace(/\s+/g, ' ').trim() },
       'pagination: MD page'
     );
   }
@@ -145,13 +160,22 @@ async function triggerCopyContent() {
   await keyboard.pressKey(Key.D);
   await keyboard.releaseKey(Key.D);
   await keyboard.releaseKey(Key.LeftAlt);
-  await sleep(120);
+  // Give the menu time to actually open before pressing N. If N is pressed too
+  // early it lands in the command line (and later echoes into the next command).
+  await sleep(config.MENU_OPEN_MS);
   await keyboard.pressKey(Key.N);
   await keyboard.releaseKey(Key.N);
-  // Let the menu fully close and the N keypress drain before any subsequent
-  // typing — otherwise the N can intermittently prepend to the next command
-  // (e.g. "MD" arrives at JFE as "NMD" and gets rejected).
-  await sleep(250);
+  // Let the menu close and the N keypress drain before any subsequent typing.
+  await sleep(config.MENU_SETTLE_MS);
+}
+
+// Backspace the command line clean. Harmless if it's already empty. This is the
+// safety net for the 'N' (and any other) keystroke leak described above.
+async function clearCommandLine() {
+  for (let i = 0; i < config.CLEAR_BACKSPACES; i++) {
+    await keyboard.pressKey(Key.Backspace);
+    await keyboard.releaseKey(Key.Backspace);
+  }
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

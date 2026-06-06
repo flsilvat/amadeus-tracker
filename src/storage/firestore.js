@@ -245,3 +245,35 @@ export async function failCommand(id, message) {
     })
     .catch((err) => logger.warn({ err: err.message, id }, 'failCommand failed'));
 }
+
+// On startup, any command still 'running' was orphaned by a crash / Ctrl-C
+// (nothing else processes commands). Reset those to 'pending' so they resume,
+// unless they've already been retried too many times (guards against a command
+// that crashes the process on every attempt).
+const MAX_COMMAND_ATTEMPTS = 3;
+
+export async function reclaimStaleCommands() {
+  if (!db) return 0;
+  try {
+    const snap = await db.collection('commands').where('status', '==', 'running').get();
+    let reset = 0;
+    for (const doc of snap.docs) {
+      const attempts = (doc.data().attempts || 0) + 1;
+      if (attempts > MAX_COMMAND_ATTEMPTS) {
+        await doc.ref.update({
+          status: 'error',
+          error: 'Interrupted too many times — re-run manually',
+          finishedAt: FieldValue.serverTimestamp(),
+        });
+      } else {
+        await doc.ref.update({ status: 'pending', attempts, startedAt: null });
+        reset += 1;
+      }
+    }
+    if (snap.size) logger.info({ reset, total: snap.size }, 'reclaimed interrupted commands');
+    return reset;
+  } catch (err) {
+    logger.warn({ err: err.message }, 'reclaimStaleCommands failed');
+    return 0;
+  }
+}

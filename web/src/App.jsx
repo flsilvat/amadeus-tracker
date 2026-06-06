@@ -5,7 +5,7 @@ import {
   subscribeGroups, subscribeGroupFlights, MOCK_GROUP, MOCK_FLIGHTS, isDemo,
 } from './lib/data.js';
 import { computeOdds } from './lib/odds.js';
-import { subscribeRecentCommands, enqueueRefreshGroup, enqueueRefreshAll } from './lib/commands.js';
+import { subscribeRecentCommands, enqueueRefreshGroup, enqueueRefreshAll, reEnqueueCommand, enqueueRescan } from './lib/commands.js';
 import Login from './components/Login.jsx';
 import Section from './components/Section.jsx';
 import AddTrip from './components/AddTrip.jsx';
@@ -116,7 +116,7 @@ function Dashboard({ uid, demo, onSignOut }) {
             staff travel odds{demo && <span className="ml-1 text-amber-600 font-semibold">· demo</span>}
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center justify-end gap-2 max-w-full">
           {!demo && (
             <button onClick={() => { setShowAdd((s) => !s); setQueuedMsg(''); }}
               className="btn-ink rounded-lg px-3 py-1.5 text-xs font-semibold transition">
@@ -124,9 +124,17 @@ function Dashboard({ uid, demo, onSignOut }) {
             </button>
           )}
           {!demo && group && (
-            <button onClick={() => { enqueueRefreshGroup(group.id, `Refresh ${group.name}`); setQueuedMsg('Refresh queued.'); }}
+            <button onClick={() => { enqueueRefreshGroup(group.id, `Refresh ${group.name}`); setQueuedMsg('Refresh queued — updates seat loads & queues.'); }}
+              title="Re-run LL: update seat loads and standby queues for flights already found"
               className="text-xs font-semibold border border-stone-300 rounded-lg px-3 py-1.5 bg-white text-stone-600 hover:bg-stone-50 transition">
-              Refresh
+              Refresh loads
+            </button>
+          )}
+          {!demo && group && (
+            <button onClick={() => { enqueueRescan(group); setQueuedMsg('Re-scan queued — re-runs flight discovery to add any missed.'); }}
+              title="Re-run AN: find flights that were missed when this trip was first added"
+              className="text-xs font-semibold border border-stone-300 rounded-lg px-3 py-1.5 bg-white text-stone-600 hover:bg-stone-50 transition">
+              Re-scan flights
             </button>
           )}
           {!demo && (
@@ -142,7 +150,12 @@ function Dashboard({ uid, demo, onSignOut }) {
         <AddTrip onClose={() => setShowAdd(false)} onQueued={(n) => setQueuedMsg(`Queued “${n}”.`)} />
       )}
 
-      {!demo && commands.length > 0 && <CommandStrip commands={commands} />}
+      {!demo && commands.length > 0 && (
+        <CommandStrip
+          commands={commands}
+          onRerun={(c) => { reEnqueueCommand(c); setQueuedMsg(`Re-queued “${c.label}”.`); }}
+        />
+      )}
 
       {groups.length === 0 && !demo ? (
         <div className="bg-white rounded-2xl border border-stone-200 p-6 text-sm text-stone-500">
@@ -235,13 +248,29 @@ const CMD_META = {
   error: { dot: 'bg-rose-500', text: 'failed' },
 };
 
-function CommandStrip({ commands }) {
+function CommandStrip({ commands, onRerun }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 20000);
+    return () => clearInterval(t);
+  }, []);
+
+  // A command 'running' for over 2 min with no result is almost certainly stuck
+  // (the service died mid-run). Normal commands finish in well under a minute.
+  const isStale = (c) => {
+    if (c.status !== 'running') return false;
+    const ms = c.startedAt && c.startedAt.toMillis ? c.startedAt.toMillis() : null;
+    return ms ? now - ms > 120000 : false;
+  };
+
   return (
     <div className="bg-white rounded-2xl border border-stone-200 p-3 mb-4">
       <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide mb-2">Activity</div>
       <ul className="flex flex-col gap-1.5">
         {commands.map((c) => {
-          const meta = CMD_META[c.status] || CMD_META.pending;
+          const stale = isStale(c);
+          const meta = stale ? { dot: 'bg-amber-500', text: 'stuck' } : (CMD_META[c.status] || CMD_META.pending);
+          const canRerun = onRerun && (c.status === 'error' || stale);
           return (
             <li key={c.id} className="flex items-center gap-2 text-xs">
               <span className={'inline-block w-2 h-2 rounded-full shrink-0 ' + meta.dot} />
@@ -250,10 +279,17 @@ function CommandStrip({ commands }) {
               {c.status === 'error' && c.error && (
                 <span className="text-rose-500 truncate" title={c.error}>· {c.error}</span>
               )}
+              {canRerun && (
+                <button onClick={() => onRerun(c)}
+                  className="ml-auto shrink-0 text-[11px] font-semibold text-blue-600 hover:text-blue-700">
+                  Re-run
+                </button>
+              )}
             </li>
           );
         })}
       </ul>
+      <p className="mt-2 text-[10px] text-stone-400">Stuck commands also resume automatically when your service restarts.</p>
     </div>
   );
 }
