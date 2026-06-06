@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+body { background: #f4f2ec; margin: 0; }
+
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* odds border accents — softened to sit on warm cream */
+.odds-blue { border-color: #3f7cc0; }
+.odds-amber { border-color: #e08a3a; }
+.odds-red { border-color: #d35088; }
+.odds-neutral { border-color: #dcd9d0; }
+
+/* warm ink for primary actions */
+.btn-ink { background-color: #4a4640; color: #fff; }
+.btn-ink:hover { background-color: #5a554d; }
+.badge-pink { background-color: #d35088; }
+
+input[type="checkbox"] { accent-color: #3f7cc0; }

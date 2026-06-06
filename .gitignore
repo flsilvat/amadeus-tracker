@@ -1,0 +1,8 @@
+node_modules/
+data/
+.env
+*.log
+.DS_Store
+service-account.json
+*.firebase-key.json
+TEMP_FIREBASE_CONFIG.txt
