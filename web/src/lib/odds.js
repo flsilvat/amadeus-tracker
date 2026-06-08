@@ -103,41 +103,82 @@ const DOWNGRADE = { F: ['F', 'J', 'W', 'M'], J: ['J', 'W', 'M'], M: ['M'] };
 export function computeOdds(flight, myCode, myDoj, confirmedSet) {
   const queue = sortedQueue(flight.queue || []);
   const pools = seatPools(flight.cabins || {});
-  const base = { queue, badge: null, dividerIndex: queue.length, color: 'neutral', seats: pools, myCabin: null };
+  const base = { queue, badge: null, dividerIndex: queue.length, color: 'neutral', seats: pools, myCabin: null, meKeys: new Set() };
   if (!myCode) return base;
   const fParts = bucketParts(myCode);
   if (!Number.isFinite(fParts.num)) return base;
   const fd = parseDoj(myDoj);
 
+  // Exact matches: pax whose pass code AND DOJ equal the trip's are YOU (and
+  // any companions on the same booking). When present, the queue already
+  // contains you — so the divider goes BELOW the last match, the badge counts
+  // people ahead INCLUDING your party, and the clearance walk seats the real
+  // you instead of inserting a virtual entry (which would double-count you).
+  const norm = (s) => String(s || '').trim().toUpperCase();
+  const meKeys = new Set();
+  let lastMatchIdx = -1;
+  if (myDoj) {
+    queue.forEach((p, idx) => {
+      if (norm(p.stfCode) === norm(myCode) && norm(p.doj) === norm(myDoj)) {
+        meKeys.add(paxKey(p));
+        lastMatchIdx = idx;
+      }
+    });
+  }
+  const matched = lastMatchIdx >= 0;
+
   let badge = 0;
   const ahead = [];
   let dividerIndex = queue.length;
-  queue.forEach((p, idx) => {
-    const pParts = bucketParts(p.stfCode);
-    if (!Number.isFinite(pParts.num)) return;
-    if (isBefore(pParts, parseDoj(p.doj), fParts, fd)) {
-      if (!confirmedSet.has(paxKey(p))) { badge++; ahead.push(p); }
-    } else if (dividerIndex === queue.length) {
-      dividerIndex = idx;
+
+  if (matched) {
+    dividerIndex = lastMatchIdx + 1;
+    for (let i = 0; i <= lastMatchIdx; i++) {
+      const q = queue[i];
+      if (!confirmedSet.has(paxKey(q))) { badge++; ahead.push(q); }
     }
-  });
+  } else {
+    queue.forEach((q, idx) => {
+      const pParts = bucketParts(q.stfCode);
+      if (!Number.isFinite(pParts.num)) return;
+      if (isBefore(pParts, parseDoj(q.doj), fParts, fd)) {
+        if (!confirmedSet.has(paxKey(q))) { badge++; ahead.push(q); }
+      } else if (dividerIndex === queue.length) {
+        dividerIndex = idx;
+      }
+    });
+  }
 
   const p = { F: pools.F, J: pools.J, W: pools.W, M: pools.M };
   const take = (pref) => {
     for (const c of (DOWNGRADE[pref] || ['M'])) { if (p[c] > 0) { p[c]--; return c; } }
     return null;
   };
-  ahead.forEach((person) => take(classPref(person.stfCode)));
 
   let myCabin = null;
-  for (const c of (DOWNGRADE[classPref(myCode)] || ['M'])) { if (p[c] > 0) { myCabin = c; break; } }
+  if (matched) {
+    // Seat everyone up to and including your party, in order. Your outcome is
+    // the cabin your LAST party member gets (the binding constraint).
+    let sawUnconfirmedMe = false;
+    ahead.forEach((person) => {
+      const c = take(classPref(person.stfCode));
+      if (meKeys.has(paxKey(person))) { sawUnconfirmedMe = true; myCabin = c; }
+    });
+    if (!sawUnconfirmedMe) {
+      // Whole party marked confirmed — show what's left at your priority point.
+      for (const c of (DOWNGRADE[classPref(myCode)] || ['M'])) { if (p[c] > 0) { myCabin = c; break; } }
+    }
+  } else {
+    ahead.forEach((person) => take(classPref(person.stfCode)));
+    for (const c of (DOWNGRADE[classPref(myCode)] || ['M'])) { if (p[c] > 0) { myCabin = c; break; } }
+  }
 
   let color;
   if (myCabin === 'F' || myCabin === 'J') color = 'blue';
   else if (myCabin === 'W' || myCabin === 'M') color = 'amber';
   else color = 'red';
 
-  return { queue, badge, dividerIndex, color, seats: pools, myCabin };
+  return { queue, badge, dividerIndex, color, seats: pools, myCabin, meKeys };
 }
 
 // ---- presentation helpers -------------------------------------------------

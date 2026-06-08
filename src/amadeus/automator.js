@@ -37,9 +37,8 @@ export async function runCommand(command, { skipPreflight = false, settleMs } = 
 
   await focusJfeWindow();
 
-  // Wipe any stray characters left in the command line before typing — most
-  // importantly the 'N' from a prior Copy-Content menu that occasionally echoes
-  // into the field and turns the next "MD" into "NMD".
+  // Wipe any stray characters left in the command line before typing (cheap
+  // safety net; see clearCommandLine).
   await clearCommandLine();
 
   if (!skipPreflight) {
@@ -155,22 +154,20 @@ async function tapEnter() {
 }
 
 async function triggerCopyContent() {
-  // Open Device menu (Alt+D), then press N for "Copy Content to Clipboard".
-  await keyboard.pressKey(Key.LeftAlt);
-  await keyboard.pressKey(Key.D);
-  await keyboard.releaseKey(Key.D);
-  await keyboard.releaseKey(Key.LeftAlt);
-  // Give the menu time to actually open before pressing N. If N is pressed too
-  // early it lands in the command line (and later echoes into the next command).
-  await sleep(config.MENU_OPEN_MS);
-  await keyboard.pressKey(Key.N);
-  await keyboard.releaseKey(Key.N);
-  // Let the menu close and the N keypress drain before any subsequent typing.
-  await sleep(config.MENU_SETTLE_MS);
+  // Copy the screen content with Ctrl+C. Unlike the old Device-menu route
+  // (Alt+D, then a literal N keypress), a chorded shortcut types no character,
+  // so nothing can leak into the command line (the cause of the old "NMD" bug).
+  await keyboard.pressKey(Key.LeftControl);
+  await keyboard.pressKey(Key.C);
+  await keyboard.releaseKey(Key.C);
+  await keyboard.releaseKey(Key.LeftControl);
+  // Brief drain so the copy lands before we poll the clipboard.
+  await sleep(config.COPY_SETTLE_MS);
 }
 
-// Backspace the command line clean. Harmless if it's already empty. This is the
-// safety net for the 'N' (and any other) keystroke leak described above.
+// Backspace the command line clean. Harmless if it's already empty. With
+// Ctrl+C copying there's no known keystroke-leak source anymore, so this is
+// just a cheap belt-and-braces guard; set CLEAR_BACKSPACES=0 to disable.
 async function clearCommandLine() {
   for (let i = 0; i < config.CLEAR_BACKSPACES; i++) {
     await keyboard.pressKey(Key.Backspace);
@@ -191,7 +188,7 @@ async function waitForClipboardChange(sentinel, timeoutMs) {
   }
   throw new Error(
     `Timed out after ${timeoutMs}ms waiting for clipboard to update. ` +
-    `Possible causes: JFE not focused, command syntax rejected, or the ` +
-    `Device → Copy Content menu accelerator (Alt+D, N) differs in your build.`
+    `Possible causes: JFE not focused, command syntax rejected, or Ctrl+C ` +
+    `not copying the screen content in your JFE build.`
   );
 }

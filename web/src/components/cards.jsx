@@ -56,14 +56,28 @@ function Fragmentish({ children }) {
   return <>{children}</>;
 }
 
+
+// Compact "last updated" stamp: time only if today (e.g. "14:32"),
+// otherwise day + time (e.g. "7 Jun 14:32").
+function fmtStamp(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const hm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString()
+    ? hm
+    : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + hm;
+}
+
 export function QueueTable({ result, myCode, confirmedSet, onToggleConfirm }) {
-  const { queue, dividerIndex } = result;
+  const { queue, dividerIndex, meKeys = new Set() } = result;
+  const matched = meKeys.size > 0;
   const Divider = () => (
     <tr>
       <td colSpan="6" className="py-1">
         <div className="flex items-center gap-2 text-blue-600 font-sans font-semibold text-[10px]">
           <div className="flex-1 border-t-2 border-dashed border-blue-300" />
-          YOU · {myCode}
+          {matched ? 'YOU ↑' : 'YOU'} · {myCode}
           <div className="flex-1 border-t-2 border-dashed border-blue-300" />
         </div>
       </td>
@@ -81,19 +95,20 @@ export function QueueTable({ result, myCode, confirmedSet, onToggleConfirm }) {
           {queue.map((p, idx) => {
             const k = paxKey(p);
             const confirmed = confirmedSet.has(k);
+            const isMe = !confirmed && meKeys.has(k);
             return (
               <Fragmentish key={k + idx}>
                 {idx === dividerIndex && myCode && <Divider />}
-                <tr className={confirmed ? 'text-stone-300 line-through' : 'text-stone-700'}>
+                <tr className={confirmed ? 'text-stone-300 line-through' : isMe ? 'text-blue-700 bg-blue-50/70' : 'text-stone-700'}>
                   <td className="text-center">
                     <input type="checkbox" checked={confirmed} onChange={() => onToggleConfirm(k)}
                       title="Mark confirmed (remove from queue + odds)" />
                   </td>
-                  <td>{p.name}</td>
+                  <td className="pr-1 whitespace-nowrap" title={p.name}>{(p.name || '').slice(0, 14)}</td>
                   <td className="text-center">{p.subcabin}</td>
-                  <td>{p.reservation}</td>
-                  <td className="font-bold">{p.stfCode}</td>
-                  <td className="text-stone-400">{p.doj}</td>
+                  <td className="whitespace-nowrap">{p.reservation}</td>
+                  <td className="font-bold whitespace-nowrap">{p.stfCode}</td>
+                  <td className={'whitespace-nowrap ' + (isMe ? 'text-blue-400' : 'text-stone-400')}>{p.doj}</td>
                 </tr>
               </Fragmentish>
             );
@@ -149,9 +164,17 @@ export function FlightCard({ flight, myCode, myDoj, confirmedSet, onToggleConfir
         </div>
 
         <div className="flex items-center justify-between gap-2 mt-0.5">
-          <span className={'text-[11px] font-semibold px-2 py-0.5 rounded-md border truncate ' + meta.pill}>
-            {statusLabel(result.color, result.myCabin)}
-          </span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className={'text-[11px] font-semibold px-2 py-0.5 rounded-md border truncate ' + meta.pill}>
+              {statusLabel(result.color, result.myCabin)}
+            </span>
+            {flight.observedAt && (
+              <span className="font-mono text-[9px] text-stone-400 tnum whitespace-nowrap shrink-0"
+                title={'Loads captured ' + new Date(flight.observedAt).toLocaleString('en-GB')}>
+                {fmtStamp(flight.observedAt)}
+              </span>
+            )}
+          </div>
           <button onClick={onToggleOpen}
             className="relative shrink-0 text-[11px] font-semibold btn-ink rounded-lg px-2.5 py-1 transition flex items-center gap-1.5">
             <span>Queue</span>

@@ -27,8 +27,9 @@ const AN_FLIGHT_RE = new RegExp(
   '(BA)\\s*' +                          // (3) marketing carrier (BA)
   '(\\d{1,4})\\s+' +                    // (4) flight digits
   '.*?' +                               // booking classes (lazy)
-  '/([A-Z]{3})\\s+\\S+\\s+' +           // (5) origin + terminal
-  '([A-Z]{3})\\s+\\S?\\s*' +            // (6) destination + optional D marker
+  '/([A-Z]{3})\\s+' +                   // (5) origin
+  '(?:[A-Z0-9]{1,2}\\s+)?' +            //     optional origin terminal (SEA prints none)
+  '([A-Z]{3})\\s+\\S?\\s*' +            // (6) destination + optional terminal/D marker
   '(\\d{4})\\s+' +                      // (7) departure HHMM
   '(\\d{4})' +                          // (8) arrival HHMM
   '(?:\\+\\d+)?' +                       // optional +N overnight day offset (e.g. "+1")
@@ -314,12 +315,14 @@ export function sortQueueByPriority(queue) {
 }
 
 // True if an AN/ANBA display contains a connecting itinerary. Connections have a
-// second flight-segment line with NO option number — leading spaces followed by
-// an airline code + 3-4 digit flight number (e.g. "     BA 098 ..."). Direct
-// options carry the option number on their only flight line, and class
+// second flight-segment line with NO option number — leading space(s) followed
+// by an optional codeshare prefix and a carrier + 3-4 digit flight number:
+//   "     BA 098  J3 ... /YYZ 3 LHR 5 ..."   (plain form)
+//   "  EI:BA5966  Y9 ... /DUB 2 LHR 2 ..."   (codeshare form)
+// Direct options carry the option number on their only flight line, and class
 // continuation lines never contain a 3-4 digit flight number, so neither
 // false-positives. Used to stop AN pagination once the direct flights end.
-const CONNECTION_SEGMENT_RE = /^ {2,}[A-Z]{2} ?\d{3,4}\b/m;
+const CONNECTION_SEGMENT_RE = /^ +(?:[A-Z0-9]{2}:)?[A-Z]{2} ?\d{3,4}\b/m;
 export function hasConnectingItinerary(text) {
   return CONNECTION_SEGMENT_RE.test(text || '');
 }

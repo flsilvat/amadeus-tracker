@@ -40,6 +40,12 @@ export function enqueueRefreshAll() {
   return enqueue('refreshAll', {}, 'Refresh all trips');
 }
 
+// Sync an archive to the work PC's local DB (the web already flipped the
+// Firestore doc; this stops the service refreshing the trip).
+export function enqueueArchiveGroup(groupId, name) {
+  return enqueue('archiveGroup', { groupId }, `Archive ${name || groupId}`);
+}
+
 // Re-run AN discovery for an EXISTING trip to pick up flights missed the first
 // time (e.g. dropped by an NMD earlier). Uses the same trip id, so it upserts —
 // it never duplicates or deletes flights, and leaves loads/queues alone.

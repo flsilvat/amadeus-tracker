@@ -1,4 +1,4 @@
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
 import { db } from '../firebase.js';
 import { CABIN_MAP } from './odds.js';
 import { flightTiming } from './time.js';
@@ -55,13 +55,28 @@ function buildFlight(flightDoc, latestObs) {
 // explicitly archived ones (active === false) are hidden.
 export function subscribeGroups(cb, onError) {
   const q = query(collection(db, 'groups'));
+  // createdAt is an ISO string mirrored from the service; tolerate Firestore
+  // Timestamps and missing values (missing -> 0 -> sorts to the bottom).
+  const ts = (g) => {
+    const c = g.createdAt;
+    if (!c) return 0;
+    if (typeof c === 'string') return Date.parse(c) || 0;
+    return c.toMillis ? c.toMillis() : 0;
+  };
   return onSnapshot(q, (snap) => {
     const groups = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
       .filter((g) => g.active !== false);
-    groups.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    groups.sort((a, b) => ts(b) - ts(a)); // newest first, oldest at the bottom
     cb(groups);
   }, onError);
+}
+
+// Archive a trip immediately (UI-side). The group doc flips active=false so it
+// disappears from every device right away; an archiveGroup command should also
+// be queued so the work PC's local DB syncs and stops refreshing it.
+export function archiveGroupNow(groupId) {
+  return updateDoc(doc(db, 'groups', groupId), { active: false });
 }
 
 // Subscribe to the flights of one group, each merged with its latest

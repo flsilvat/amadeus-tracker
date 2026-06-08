@@ -11,6 +11,7 @@ import {
   createOrUpdateGroupAndDiscover,
   refreshGroup,
   refreshAllActiveGroups,
+  archiveGroup,
 } from '../service.js';
 import {
   subscribePendingCommands,
@@ -24,6 +25,7 @@ const HANDLERS = {
   createGroup: (p) => createOrUpdateGroupAndDiscover(p.group),
   refreshGroup: (p) => refreshGroup(p.groupId),
   refreshAll: () => refreshAllActiveGroups(),
+  archiveGroup: (p) => archiveGroup(p.groupId),
 };
 
 function summarize(type, result) {

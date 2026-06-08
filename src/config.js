@@ -13,15 +13,13 @@ const schema = z.object({
   MD_SETTLE_MS: z.coerce.number().default(1200),
   // Per-keystroke delay used by nut-js. Higher = more reliable, slightly slower.
   KEYBOARD_AUTO_DELAY_MS: z.coerce.number().default(100),
-  // Wait (ms) after Alt+D opens the Device menu before pressing N (Copy
-  // Content). Too short and N lands in the command line instead of the menu,
-  // which then echoes into the next command (e.g. "MD" -> "NMD").
-  MENU_OPEN_MS: z.coerce.number().default(250),
-  // Wait (ms) after pressing N for the menu to close and the keypress to drain.
-  MENU_SETTLE_MS: z.coerce.number().default(300),
-  // Backspaces sent to wipe the command line before typing each command, as a
-  // safety net against a stray leaked character. Harmless when the line is empty.
-  CLEAR_BACKSPACES: z.coerce.number().default(8),
+  // Wait (ms) after Ctrl+C before polling the clipboard. Small drain only —
+  // chorded copy is immediate, unlike the old Device-menu route.
+  COPY_SETTLE_MS: z.coerce.number().default(150),
+  // Backspaces sent to wipe the command line before typing each command.
+  // With Ctrl+C copying there's no known leak source, so this is just a cheap
+  // safety net. Set to 0 to disable entirely.
+  CLEAR_BACKSPACES: z.coerce.number().default(3),
   // Stop AN pagination as soon as a connecting itinerary appears. AN lists
   // direct flights first, so this skips the (discarded) connection pages. Set
   // to "false" if you ever find a direct flight being missed.

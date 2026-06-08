@@ -277,3 +277,16 @@ export async function reclaimStaleCommands() {
     return 0;
   }
 }
+
+// Merge ONLY the active flag on a group doc (used by archive/unarchive). The
+// full mirrorGroup would need the whole group object; this avoids re-mapping.
+export function mirrorGroupActive(groupId, active) {
+  if (!db) return Promise.resolve();
+  return safeFireAndForget(
+    `group ${groupId} active=${active}`,
+    db.collection('groups').doc(groupId).set(
+      { active: Boolean(active), updatedAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    )
+  );
+}

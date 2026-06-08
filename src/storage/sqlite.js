@@ -191,6 +191,12 @@ export function deleteGroup(id) {
   return getDb().prepare(`DELETE FROM groups WHERE id = ?`).run(id);
 }
 
+// Soft-delete: archived groups are hidden in the app and skipped by
+// refreshAllActiveGroups, but their flights/observations stay stored.
+export function setGroupActive(id, active) {
+  return getDb().prepare(`UPDATE groups SET active = ? WHERE id = ?`).run(active ? 1 : 0, id);
+}
+
 // ---------- flights ----------
 
 export function upsertFlight(f) {

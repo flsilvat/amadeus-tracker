@@ -12,9 +12,9 @@ import { parseAN, parseLL, sortQueueByPriority, hasConnectingItinerary } from '.
 import { config } from './config.js';
 import { logger } from './logger.js';
 import {
-  upsertGroup, upsertFlight, getGroup, listGroups, listFlights, insertObservation, getFlight,
+  upsertGroup, upsertFlight, getGroup, listGroups, listFlights, insertObservation, getFlight, setGroupActive,
 } from './storage/sqlite.js';
-import { mirrorGroup, mirrorFlight, mirrorObservation } from './storage/firestore.js';
+import { mirrorGroup, mirrorFlight, mirrorObservation, mirrorGroupActive } from './storage/firestore.js';
 
 function directionFor(origin, destination) {
   if (origin === config.HOME_AIRPORT) return 'outbound';
@@ -182,6 +182,19 @@ export async function refreshAllActiveGroups() {
     results.push(await refreshGroup(g.id));
   }
   return results;
+}
+
+// Archive (soft-delete) a trip: hidden from the app and skipped by refreshAll,
+// but the group row and ALL its flights/observations remain stored in both
+// SQLite and Firestore. No JFE work involved. Reversible by setting active=1.
+export async function archiveGroup(groupId) {
+  const g = getGroup(groupId);
+  if (g) setGroupActive(groupId, false);
+  // Mirror regardless — the group may exist only in Firestore (e.g. archived
+  // from the web before this machine ever synced it).
+  await mirrorGroupActive(groupId, false);
+  logger.info({ groupId, inSqlite: Boolean(g) }, 'group archived');
+  return { groupId, archived: true };
 }
 
 export async function runRawCommand(command, { paginate = false } = {}) {
