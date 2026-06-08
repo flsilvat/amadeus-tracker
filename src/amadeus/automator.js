@@ -20,7 +20,7 @@ keyboard.config.autoDelayMs = config.KEYBOARD_AUTO_DELAY_MS;
  *   settleMs overrides the wait between typing the command and triggering
  *   Copy. Defaults to INITIAL_SETTLE_MS; pass MD_SETTLE_MS for MD calls.
  */
-export async function runCommand(command, { skipPreflight = false, settleMs } = {}) {
+export async function runCommand(command, { skipPreflight = false, settleMs, prevText = null, expect = null, verifyChange = false } = {}) {
   if (config.DRY_RUN) {
     logger.warn({ command }, 'DRY_RUN: returning sample response');
     return {
@@ -31,9 +31,6 @@ export async function runCommand(command, { skipPreflight = false, settleMs } = 
   }
 
   const settle = settleMs ?? config.INITIAL_SETTLE_MS;
-
-  const sentinel = `__JFE_SENTINEL_${Date.now()}_${Math.random().toString(36).slice(2)}__`;
-  await clipboard.write(sentinel);
 
   await focusJfeWindow();
 
@@ -46,14 +43,54 @@ export async function runCommand(command, { skipPreflight = false, settleMs } = 
     await sleep(200);
   }
 
+  // Staleness baseline: the screen content BEFORE this command. If the
+  // post-command copy equals it, JFE hadn't rendered yet and we copied the old
+  // screen — the silent cause of missing flights. For MD pages the caller
+  // passes the previous page as prevText; for initial commands (verifyChange)
+  // we snapshot the screen ourselves with one extra copy.
+  let baseline = prevText;
+  if (verifyChange && baseline === null) {
+    try {
+      baseline = await copyScreen();
+    } catch (err) {
+      logger.warn({ command, err: err.message }, 'pre-command snapshot failed — continuing without staleness check');
+      baseline = null;
+    }
+  }
+
   await keyboard.type(command);
   await tapEnter();
-
   await sleep(settle);
-  await triggerCopyContent();
 
-  const response = await waitForClipboardChange(sentinel, config.CLIPBOARD_TIMEOUT_MS);
+  // Capture with verification + retries. A copy is rejected as suspect when it
+  // (a) equals the baseline (screen not updated yet), or (b) fails the caller's
+  // `expect` check (e.g. AN responses echo the command text). Suspect copies
+  // are retried after a short wait; if still suspect after the last attempt we
+  // use what we have (matches the old behaviour, but loudly logged).
+  const maxAttempts = Math.max(1, config.CAPTURE_RETRIES);
+  let response = await copyScreen();
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const stale = baseline !== null && response === baseline;
+    const mismatch = expect ? !expect.test(response) : false;
+    if (!stale && !mismatch) break;
+    if (attempt === maxAttempts) {
+      logger.warn({ command, attempts: maxAttempts, stale, mismatch }, 'capture still suspect after retries — using last copy');
+      break;
+    }
+    logger.warn({ command, attempt, stale, mismatch }, 'capture looks stale (screen may still be rendering) — retrying copy');
+    await sleep(config.CAPTURE_RETRY_MS);
+    response = await copyScreen();
+  }
+
   return { command, response, capturedAt: new Date().toISOString() };
+}
+
+// One full screen copy: sentinel → Ctrl+C → wait for the clipboard to change.
+async function copyScreen() {
+  const sentinel = `__JFE_SENTINEL_${Date.now()}_${Math.random().toString(36).slice(2)}__`;
+  await clipboard.write(sentinel);
+  await triggerCopyContent();
+  return waitForClipboardChange(sentinel, config.CLIPBOARD_TIMEOUT_MS);
 }
 
 /**
@@ -79,7 +116,10 @@ export async function runCommandPaginated(initialCommand, opts = {}) {
     return null;
   };
 
-  const first = await runCommand(initialCommand);
+  const first = await runCommand(initialCommand, {
+    verifyChange: true,                 // snapshot screen before the command
+    expect: opts.expect ?? null,        // e.g. AN responses echo the command
+  });
   const pages = [first.response];
   const seen = new Set([first.response]);   // any previously seen page, not just last
   let pageCount = 1;
@@ -94,9 +134,12 @@ export async function runCommandPaginated(initialCommand, opts = {}) {
   while (!hitEnd && pageCount < maxPages) {
     // MD must NOT have the pre-flight Enter (would lose AN/LL context).
     // Use the shorter MD settle time — page is already loaded server-side.
+    // prevText: if the copy equals the previous page, the screen hadn't
+    // advanced yet — retry instead of mistaking it for the end of pagination.
     const next = await runCommand('MD', {
       skipPreflight: true,
       settleMs: config.MD_SETTLE_MS,
+      prevText: pages[pages.length - 1],
     });
 
     if (seen.has(next.response)) {

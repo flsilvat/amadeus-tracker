@@ -16,6 +16,13 @@ const schema = z.object({
   // Wait (ms) after Ctrl+C before polling the clipboard. Small drain only —
   // chorded copy is immediate, unlike the old Device-menu route.
   COPY_SETTLE_MS: z.coerce.number().default(150),
+  // Capture verification: a copy that equals the pre-command screen (or fails
+  // the expected-content check) is retried up to CAPTURE_RETRIES times,
+  // waiting CAPTURE_RETRY_MS between attempts. This is what protects you when
+  // Amadeus renders slower than the settle time — without it, a too-early copy
+  // silently loses data (e.g. pagination stops a page early).
+  CAPTURE_RETRIES: z.coerce.number().default(3),
+  CAPTURE_RETRY_MS: z.coerce.number().default(1500),
   // Backspaces sent to wipe the command line before typing each command.
   // With Ctrl+C copying there's no known leak source, so this is just a cheap
   // safety net. Set to 0 to disable entirely.

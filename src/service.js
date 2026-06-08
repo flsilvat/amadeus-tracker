@@ -48,6 +48,9 @@ export async function createOrUpdateGroupAndDiscover(groupSpec) {
         // AN lists direct flights first; once a connecting itinerary appears,
         // everything after is connections (which we discard), so stop paging.
         stopWhen: config.AN_STOP_AT_CONNECTIONS ? hasConnectingItinerary : null,
+        // AN responses echo the command at the top — require it, so a copy of
+        // a half-rendered/old screen is retried instead of parsed.
+        expect: new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
       })
     );
 
