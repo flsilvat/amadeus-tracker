@@ -7,7 +7,7 @@ import {
 import { computeOdds } from './lib/odds.js';
 import { subscribeRecentCommands, enqueueRefreshGroup, enqueueRefreshAll, reEnqueueCommand, enqueueRescan, enqueueArchiveGroup } from './lib/commands.js';
 import Login from './components/Login.jsx';
-import Section from './components/Section.jsx';
+import Section, { CARD_W } from './components/Section.jsx';
 import AddTrip from './components/AddTrip.jsx';
 
 const segBtn = (active) =>
@@ -87,10 +87,12 @@ function Dashboard({ uid, demo, onSignOut }) {
   const [sortMode, setSortMode] = useState('time');
   const [cols, setCols] = useState(() => (typeof window !== 'undefined' && window.innerWidth < 700 ? 2 : 3));
   const [isPhone, setIsPhone] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 500);
+  const layoutW = () => (typeof document !== 'undefined' && document.documentElement.clientWidth) || (typeof window !== 'undefined' ? window.innerWidth : 1280);
+  const [winW, setWinW] = useState(layoutW);
   const [openFlights, setOpenFlights] = useState(() => new Set());
 
   useEffect(() => {
-    const onResize = () => setIsPhone(window.innerWidth <= 500);
+    const onResize = () => { setIsPhone(window.innerWidth <= 500); setWinW(layoutW()); };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
@@ -123,7 +125,7 @@ function Dashboard({ uid, demo, onSignOut }) {
   const shared = { ...app, openFlights, toggleOpen };
 
   return (
-    <div className="max-w-[1272px] mx-auto px-3 py-5">
+    <div className="max-w-[1320px] mx-auto px-3 py-5">
       <header className="mb-4 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight truncate">{group ? group.name : 'Staff travel odds'}</h1>
@@ -250,10 +252,18 @@ function Dashboard({ uid, demo, onSignOut }) {
           </div>
 
           {(() => {
-            // When BOTH legs are small (≤4 cards combined), put the two
-            // sections side by side so everything sits on one row.
+            // When BOTH legs are small (≤4 cards combined) AND the combined
+            // row actually fits the window at full card width, put the two
+            // sections side by side. (Checking the real width matters: flex
+            // wraps before cards get a chance to shrink, so a near-miss used
+            // to push Inbound onto a second line.)
+            const total = outbound.length + inbound.length;
+            const SECTION_GAP = 24; // matches gap-x-6 below
+            const needW = total * CARD_W + (total - 2) * 12 + SECTION_GAP;
+            const availW = Math.min(winW, 1320) - 24; // page px-3 padding
+            const SHRINK_BUDGET = 16 * total; // cards may shrink a touch instead of wrapping
             const inline = !isPhone && outbound.length > 0 && inbound.length > 0
-              && outbound.length + inbound.length <= 4;
+              && total <= 4 && needW <= availW + SHRINK_BUDGET;
             const out = (
               <Section title={`Outbound${outbound[0] ? ' · ' + outbound[0].origin + ' → ' + outbound[0].destination : ''}`}
                 flights={outbound} cols={cols} isPhone={isPhone} inline={inline} app={shared} myCode={myCode} myDoj={myDoj} />
