@@ -38,6 +38,14 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Custom groups: user-curated, cross-trip views (just lists of flight
+    // references). Each signed-in user manages their own.
+    match /flightGroups/{groupId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.resource.data.createdBy == request.auth.uid;
+      allow update, delete: if request.auth != null && resource.data.createdBy == request.auth.uid;
+    }
+
     // Default deny everything else.
     match /{document=**} {
       allow read, write: if false;

@@ -46,6 +46,21 @@ export function enqueueArchiveGroup(groupId, name) {
   return enqueue('archiveGroup', { groupId }, `Archive ${name || groupId}`);
 }
 
+// Sync a single flight hide/restore to the work PC (web already flipped the doc).
+export function enqueueArchiveFlight(flightNo, isoDate) {
+  return enqueue('archiveFlight', { flightNo, isoDate }, `Hide ${flightNo} ${isoDate}`);
+}
+export function enqueueRestoreFlight(flightNo, isoDate) {
+  return enqueue('restoreFlight', { flightNo, isoDate }, `Restore ${flightNo} ${isoDate}`);
+}
+
+// Refresh loads for a specific set of flights (used by custom Groups, which
+// span trips). refs: [{ flightNo, isoDate, origin }].
+export function enqueueRefreshFlights(refs, label) {
+  const flights = (refs || []).map((r) => ({ flightNo: r.flightNo, isoDate: r.isoDate, origin: r.origin }));
+  return enqueue('refreshFlights', { flights }, label || 'Refresh group flights');
+}
+
 // Re-run AN discovery for an EXISTING trip to pick up flights missed the first
 // time (e.g. dropped by an NMD earlier). Uses the same trip id, so it upserts —
 // it never duplicates or deletes flights, and leaves loads/queues alone.

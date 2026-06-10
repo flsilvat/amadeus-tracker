@@ -12,6 +12,9 @@ import {
   refreshGroup,
   refreshAllActiveGroups,
   archiveGroup,
+  refreshFlights,
+  archiveFlight,
+  restoreFlight,
 } from '../service.js';
 import {
   subscribePendingCommands,
@@ -26,12 +29,15 @@ const HANDLERS = {
   refreshGroup: (p) => refreshGroup(p.groupId),
   refreshAll: () => refreshAllActiveGroups(),
   archiveGroup: (p) => archiveGroup(p.groupId),
+  refreshFlights: (p) => refreshFlights(p.flights || []),
+  archiveFlight: (p) => archiveFlight(p),
+  restoreFlight: (p) => restoreFlight(p),
 };
 
 function summarize(type, result) {
   if (type === 'createGroup') return { discovered: Array.isArray(result) ? result.length : null };
-  if (type === 'refreshGroup' || type === 'refreshAll') {
-    return { refreshed: Array.isArray(result) ? result.length : (result ?? null) };
+  if (type === 'refreshGroup' || type === 'refreshAll' || type === 'refreshFlights') {
+    return result && typeof result === 'object' ? { refreshed: result.refreshed ?? null } : null;
   }
   return null;
 }

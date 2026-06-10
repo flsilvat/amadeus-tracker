@@ -58,6 +58,7 @@ export function initDb() {
       arr_time TEXT,
       equipment TEXT,
       discovered_at TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
       UNIQUE(group_id, flight_no, iso_date),
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
     );
@@ -131,6 +132,11 @@ export function initDb() {
   if (!groupCols.includes('my_doj')) {
     db.exec(`ALTER TABLE groups ADD COLUMN my_doj TEXT`);
     logger.info('migration: added groups.my_doj');
+  }
+  const flightCols = db.prepare(`SELECT name FROM pragma_table_info('flights')`).all().map(r => r.name);
+  if (!flightCols.includes('active')) {
+    db.exec(`ALTER TABLE flights ADD COLUMN active INTEGER NOT NULL DEFAULT 1`);
+    logger.info('migration: added flights.active');
   }
 
   return db;
@@ -225,15 +231,33 @@ export function upsertFlight(f) {
   }).id;
 }
 
-export function listFlights(groupId) {
+export function listFlights(groupId, { includeHidden = false } = {}) {
+  const where = includeHidden ? '' : ' AND active = 1';
   if (groupId) {
-    return getDb().prepare(`SELECT * FROM flights WHERE group_id = ? ORDER BY iso_date, dep_time`).all(groupId);
+    return getDb().prepare(`SELECT * FROM flights WHERE group_id = ?${where ? ' ' + where.trim() : ''} ORDER BY iso_date, dep_time`).all(groupId);
   }
-  return getDb().prepare(`SELECT * FROM flights ORDER BY iso_date, dep_time`).all();
+  return getDb().prepare(`SELECT * FROM flights${includeHidden ? '' : ' WHERE active = 1'} ORDER BY iso_date, dep_time`).all();
 }
 
 export function getFlight(id) {
   return getDb().prepare(`SELECT * FROM flights WHERE id = ?`).get(id);
+}
+
+// Resolve a flight by its natural key (flight number + date), optionally scoped
+// to a trip. Used by web-issued commands that don't know the SQLite row id.
+export function findFlight({ flightNo, isoDate, groupId }) {
+  if (groupId) {
+    return getDb().prepare(
+      `SELECT * FROM flights WHERE group_id = ? AND flight_no = ? AND iso_date = ?`
+    ).get(groupId, flightNo, isoDate);
+  }
+  return getDb().prepare(
+    `SELECT * FROM flights WHERE flight_no = ? AND iso_date = ? ORDER BY active DESC LIMIT 1`
+  ).get(flightNo, isoDate);
+}
+
+export function setFlightActive(id, active) {
+  return getDb().prepare(`UPDATE flights SET active = ? WHERE id = ?`).run(active ? 1 : 0, id);
 }
 
 // ---------- observations + queue (transactional) ----------

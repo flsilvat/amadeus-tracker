@@ -5,9 +5,11 @@ export const CARD_W = 300; // fixed card width on desktop; phone uses one full-w
 export default function Section({ title, flights, cols, isPhone, inline = false, app, myCode, myDoj }) {
   if (flights.length === 0) return null;
   const n = flights.length;
-  // Small sections (up to 4 flights) fit on ONE row regardless of the column
-  // cap: each card may shrink below CARD_W so they all share the width.
-  const oneRow = !isPhone && n <= 4;
+  // One-row layout only when the section genuinely fits within the chosen
+  // column cap (n <= cols). Beyond that, fall through to the multi-row grid
+  // that honours `cols` — otherwise a 4-flight group would ignore "2 columns"
+  // and splay all four across one row.
+  const oneRow = !isPhone && n <= Math.max(1, cols);
   const gridStyle = isPhone
     ? { display: 'grid', gridTemplateColumns: '1fr', gap: '12px' }
     : oneRow
@@ -46,6 +48,7 @@ export default function Section({ title, flights, cols, isPhone, inline = false,
               onToggleStar={() => app.toggleFavorite(key)}
               open={app.openFlights.has(key)}
               onToggleOpen={() => app.toggleOpen(key)}
+              actions={app.flightActions}
             />
           );
         })}

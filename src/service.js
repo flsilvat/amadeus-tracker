@@ -12,9 +12,12 @@ import { parseAN, parseLL, sortQueueByPriority, hasConnectingItinerary } from '.
 import { config } from './config.js';
 import { logger } from './logger.js';
 import {
-  upsertGroup, upsertFlight, getGroup, listGroups, listFlights, insertObservation, getFlight, setGroupActive,
+  upsertGroup, upsertFlight, getGroup, listGroups, listFlights, insertObservation, getFlight,
+  setGroupActive, findFlight, setFlightActive,
 } from './storage/sqlite.js';
-import { mirrorGroup, mirrorFlight, mirrorObservation, mirrorGroupActive } from './storage/firestore.js';
+import {
+  mirrorGroup, mirrorFlight, mirrorObservation, mirrorGroupActive, mirrorFlightActive,
+} from './storage/firestore.js';
 
 function directionFor(origin, destination) {
   if (origin === config.HOME_AIRPORT) return 'outbound';
@@ -108,11 +111,67 @@ export async function createOrUpdateGroupAndDiscover(groupSpec) {
  * Run LL (paginated) for every flight in a group, parse cabins + queue,
  * sort the queue, persist to SQLite, mirror to Firestore.
  */
+// Refresh one flight (LL → parse → store → mirror). Returns true on success.
+// `f` is a SQLite flight row. Shared by refreshGroup and refreshFlights.
+async function refreshOneFlight(f, failures) {
+  const command = buildLL(f.flight_no, f.iso_date, f.origin);
+  logger.info({ command }, 'LL command built');
+  try {
+    const { response, capturedAt, pages, complete } = await enqueue(
+      `LL ${f.flight_no} ${f.iso_date}`,
+      () => runCommandPaginated(command, { endMarker: /END OF DISPLAY/ })
+    );
+
+    const parsed = parseLL(response);
+    if (!parsed.cabins.length) {
+      failures.push({ flightId: f.id, reason: 'no cabins parsed', sample: response.slice(0, 200) });
+      return false;
+    }
+
+    sortQueueByPriority(parsed.queue);
+
+    insertObservation({
+      flightId: f.id,
+      isoDate: f.iso_date,
+      queryTime: capturedAt,
+      cabins: parsed.cabins,
+      queueEntries: parsed.queue,
+      rawResponse: response,
+    });
+
+    const daysToDeparture =
+      (new Date(f.iso_date + 'T00:00:00Z').getTime() - new Date(capturedAt).getTime()) /
+      (1000 * 60 * 60 * 24);
+    mirrorObservation({
+      flightNo: f.flight_no,
+      isoDate: f.iso_date,
+      origin: f.origin,
+      destination: f.destination,
+      queryTime: capturedAt,
+      daysToDeparture,
+      cabins: parsed.cabins,
+      queue: parsed.queue,
+      groupId: f.group_id,
+      flightId: f.id,
+    });
+
+    logger.info(
+      { flight: f.flight_no, pages, complete, queueSize: parsed.queue.length },
+      'LL stored + mirrored'
+    );
+    return true;
+  } catch (err) {
+    logger.error({ flight: f.flight_no, err: err.message }, 'LL failed');
+    failures.push({ flightId: f.id, reason: err.message });
+    return false;
+  }
+}
+
 export async function refreshGroup(groupId) {
   const group = getGroup(groupId);
   if (!group) throw new Error(`Unknown group: ${groupId}`);
 
-  const flights = listFlights(groupId);
+  const flights = listFlights(groupId); // active only — hidden flights skipped
   if (!flights.length) {
     logger.warn({ groupId }, 'refreshGroup: no flights to refresh');
     return { groupId, refreshed: 0 };
@@ -120,62 +179,48 @@ export async function refreshGroup(groupId) {
 
   let refreshed = 0;
   const failures = [];
-
   for (const f of flights) {
-    const command = buildLL(f.flight_no, f.iso_date, f.origin);
-    logger.info({ command }, 'LL command built');
-    try {
-      const { response, capturedAt, pages, complete } = await enqueue(
-        `LL ${f.flight_no} ${f.iso_date}`,
-        () => runCommandPaginated(command, { endMarker: /END OF DISPLAY/ })
-      );
-
-      const parsed = parseLL(response);
-      if (!parsed.cabins.length) {
-        failures.push({ flightId: f.id, reason: 'no cabins parsed', sample: response.slice(0, 200) });
-        continue;
-      }
-
-      sortQueueByPriority(parsed.queue);
-
-      insertObservation({
-        flightId: f.id,
-        isoDate: f.iso_date,
-        queryTime: capturedAt,
-        cabins: parsed.cabins,
-        queueEntries: parsed.queue,
-        rawResponse: response,
-      });
-
-      // Mirror to Firestore — include groupId so the frontend can filter.
-      const daysToDeparture =
-        (new Date(f.iso_date + 'T00:00:00Z').getTime() - new Date(capturedAt).getTime()) /
-        (1000 * 60 * 60 * 24);
-      mirrorObservation({
-        flightNo: f.flight_no,
-        isoDate: f.iso_date,
-        origin: f.origin,
-        destination: f.destination,
-        queryTime: capturedAt,
-        daysToDeparture,
-        cabins: parsed.cabins,
-        queue: parsed.queue,
-        groupId: f.group_id,
-        flightId: f.id,
-      });
-
-      logger.info(
-        { flight: f.flight_no, pages, complete, queueSize: parsed.queue.length },
-        'LL stored + mirrored'
-      );
-      refreshed++;
-    } catch (err) {
-      logger.error({ flight: f.flight_no, err: err.message }, 'LL failed');
-      failures.push({ flightId: f.id, reason: err.message });
-    }
+    if (await refreshOneFlight(f, failures)) refreshed++;
   }
-
   return { groupId, refreshed, failures, total: flights.length };
+}
+
+// Refresh a specific set of flights (used by custom Groups, which span trips).
+// refs: [{ flightNo, isoDate, origin? }]. Resolves each to its SQLite row.
+export async function refreshFlights(refs = []) {
+  let refreshed = 0;
+  const failures = [];
+  for (const ref of refs) {
+    const f = findFlight({ flightNo: ref.flightNo, isoDate: ref.isoDate });
+    if (!f) {
+      failures.push({ ref, reason: 'flight not found in local DB' });
+      continue;
+    }
+    if (await refreshOneFlight(f, failures)) refreshed++;
+  }
+  return { refreshed, failures, total: refs.length };
+}
+
+// Soft-hide / restore a flight: it stops showing and being refreshed, but its
+// observations are kept. Resolves by id or natural key. No JFE work.
+export async function archiveFlight(payload) {
+  const f = payload.flightId ? getFlight(payload.flightId) : findFlight(payload);
+  if (f) setFlightActive(f.id, false);
+  const flightNo = f ? f.flight_no : payload.flightNo;
+  const isoDate = f ? f.iso_date : payload.isoDate;
+  if (flightNo && isoDate) await mirrorFlightActive(flightNo, isoDate, false);
+  logger.info({ flightNo, isoDate, inSqlite: Boolean(f) }, 'flight archived');
+  return { flightNo, isoDate, archived: true };
+}
+
+export async function restoreFlight(payload) {
+  const f = payload.flightId ? getFlight(payload.flightId) : findFlight(payload);
+  if (f) setFlightActive(f.id, true);
+  const flightNo = f ? f.flight_no : payload.flightNo;
+  const isoDate = f ? f.iso_date : payload.isoDate;
+  if (flightNo && isoDate) await mirrorFlightActive(flightNo, isoDate, true);
+  logger.info({ flightNo, isoDate, inSqlite: Boolean(f) }, 'flight restored');
+  return { flightNo, isoDate, restored: true };
 }
 
 export async function refreshAllActiveGroups() {

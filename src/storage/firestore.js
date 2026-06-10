@@ -91,6 +91,7 @@ export function mirrorFlight(flight) {
     arrTime: flight.arr_time,
     equipment: flight.equipment,
     discoveredAt: flight.discovered_at,
+    active: flight.active === 0 ? false : true,
     updatedAt: FieldValue.serverTimestamp(),
   };
   return safeFireAndForget(
@@ -285,6 +286,20 @@ export function mirrorGroupActive(groupId, active) {
   return safeFireAndForget(
     `group ${groupId} active=${active}`,
     db.collection('groups').doc(groupId).set(
+      { active: Boolean(active), updatedAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    )
+  );
+}
+
+// Merge ONLY the active flag on a flight doc (used by flight soft-delete /
+// restore). docId is `${flightNo}_${isoDate}`.
+export function mirrorFlightActive(flightNo, isoDate, active) {
+  if (!db) return Promise.resolve();
+  const docId = `${flightNo}_${isoDate}`;
+  return safeFireAndForget(
+    `flight ${docId} active=${active}`,
+    db.collection('flights').doc(docId).set(
       { active: Boolean(active), updatedAt: FieldValue.serverTimestamp() },
       { merge: true }
     )

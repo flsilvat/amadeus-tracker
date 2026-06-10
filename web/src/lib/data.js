@@ -1,4 +1,7 @@
-import { collection, doc, onSnapshot, query, updateDoc, where } from 'firebase/firestore';
+import {
+  addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, query,
+  serverTimestamp, setDoc, updateDoc, where,
+} from 'firebase/firestore';
 import { db } from '../firebase.js';
 import { CABIN_MAP } from './odds.js';
 import { flightTiming } from './time.js';
@@ -43,6 +46,7 @@ function buildFlight(flightDoc, latestObs) {
     equipment: flightDoc.equipment,
     durationMin: timing.durationMin,
     arrDayOffset: timing.arrDayOffset,
+    active: flightDoc.active !== false,
     cabins: latestObs ? mapCabins(latestObs.cabins) : {},
     queue: latestObs ? latestObs.queue || [] : [],
     observedAt: latestObs ? latestObs.queryTime : null,
@@ -84,7 +88,7 @@ export function archiveGroupNow(groupId) {
 //
 // We read all observations for the group (single equality filter -> no
 // composite index needed) and reduce to the latest per flight client-side.
-export function subscribeGroupFlights(groupId, cb, onError) {
+export function subscribeGroupFlights(groupId, cb, onError, { includeHidden = false } = {}) {
   const flightsQ = query(collection(db, 'flights'), where('groupId', '==', groupId));
   const obsQ = query(collection(db, 'observations'), where('groupId', '==', groupId));
 
@@ -92,15 +96,128 @@ export function subscribeGroupFlights(groupId, cb, onError) {
   let latestByFlight = {}; // flightKey -> obs
 
   const emit = () => {
-    const cards = flightDocs.map((f) => {
-      const key = `${f.flightNo}_${f.isoDate}`;
-      return buildFlight(f, latestByFlight[key] || null);
-    });
+    const cards = flightDocs
+      .filter((f) => includeHidden || f.active !== false)
+      .map((f) => {
+        const key = `${f.flightNo}_${f.isoDate}`;
+        return buildFlight(f, latestByFlight[key] || null);
+      });
     cb(cards);
   };
 
   const unsubFlights = onSnapshot(flightsQ, (snap) => {
     flightDocs = snap.docs.map((d) => d.data());
+    emit();
+  }, onError);
+
+  const unsubObs = onSnapshot(obsQ, (snap) => {
+    const latest = {};
+    snap.docs.forEach((d) => {
+      const o = d.data();
+      const key = `${o.flightNo}_${o.isoDate}`;
+      const prev = latest[key];
+      if (!prev || obsMillis(o) > obsMillis(prev) ||
+          (obsMillis(o) === obsMillis(prev) && String(o.queryTime) > String(prev.queryTime))) {
+        latest[key] = o;
+      }
+    });
+    latestByFlight = latest;
+    emit();
+  }, onError);
+
+  return () => { unsubFlights(); unsubObs(); };
+}
+
+// Hide / restore a single flight immediately (UI-side). The flight doc flips
+// active so it vanishes from every device at once; an archiveFlight command
+// should also be queued so the work PC stops refreshing it.
+export function archiveFlightNow(flightNo, isoDate) {
+  return updateDoc(doc(db, 'flights', `${flightNo}_${isoDate}`), { active: false });
+}
+export function restoreFlightNow(flightNo, isoDate) {
+  return updateDoc(doc(db, 'flights', `${flightNo}_${isoDate}`), { active: true });
+}
+
+// ---------------------------------------------------------------------------
+// Custom groups — curated, cross-trip views. Firestore-only (`/flightGroups`).
+// A group is just an ordered list of live flight references.
+//   flights: [ { flightNo, isoDate, origin, destination } ]
+// ---------------------------------------------------------------------------
+
+export function subscribeFlightGroups(cb, onError) {
+  return onSnapshot(query(collection(db, 'flightGroups')), (snap) => {
+    const groups = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const ts = (g) => (g.createdAt && g.createdAt.toMillis ? g.createdAt.toMillis() : 0);
+    groups.sort((a, b) => ts(a) - ts(b)); // oldest first (stable tab order)
+    cb(groups);
+  }, onError);
+}
+
+export async function createFlightGroup(name, uid) {
+  const ref = await addDoc(collection(db, 'flightGroups'), {
+    name: name || 'My journey',
+    createdBy: uid || null,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    flights: [],
+  });
+  return ref.id;
+}
+
+export function renameFlightGroup(id, name) {
+  return updateDoc(doc(db, 'flightGroups', id), { name, updatedAt: serverTimestamp() });
+}
+
+export function deleteFlightGroup(id) {
+  return deleteDoc(doc(db, 'flightGroups', id));
+}
+
+const refKey = (r) => `${r.flightNo}_${r.isoDate}`;
+
+export function setFlightGroupFlights(id, flights) {
+  return updateDoc(doc(db, 'flightGroups', id), { flights, updatedAt: serverTimestamp() });
+}
+
+export function addFlightToGroup(group, flight) {
+  const ref = { flightNo: flight.flightNo, isoDate: flight.isoDate, origin: flight.origin, destination: flight.destination };
+  const exists = (group.flights || []).some((r) => refKey(r) === refKey(ref));
+  const flights = exists ? group.flights : [...(group.flights || []), ref];
+  return setFlightGroupFlights(group.id, flights);
+}
+
+export function removeFlightFromGroup(group, flight) {
+  const flights = (group.flights || []).filter((r) => refKey(r) !== `${flight.flightNo}_${flight.isoDate}`);
+  return setFlightGroupFlights(group.id, flights);
+}
+
+// Render a custom group: resolve each ref against the LIVE flights +
+// latest observations across ALL trips. Returns card view-models (same shape
+// as subscribeGroupFlights) in the group's stored order.
+export function subscribeCustomGroupFlights(group, cb, onError) {
+  const flightsQ = query(collection(db, 'flights'));
+  const obsQ = query(collection(db, 'observations'));
+
+  let flightByKey = {};
+  let latestByFlight = {};
+  const refs = () => group.flights || [];
+
+  const emit = () => {
+    const cards = refs()
+      .map((r) => {
+        const key = `${r.flightNo}_${r.isoDate}`;
+        const f = flightByKey[key];
+        // Fall back to the stored ref if the flight doc isn't loaded yet, so
+        // the card still renders (without loads) instead of vanishing.
+        const flightDoc = f || { ...r, direction: undefined };
+        return buildFlight(flightDoc, latestByFlight[key] || null);
+      });
+    cb(cards);
+  };
+
+  const unsubFlights = onSnapshot(flightsQ, (snap) => {
+    const byKey = {};
+    snap.docs.forEach((d) => { const f = d.data(); byKey[`${f.flightNo}_${f.isoDate}`] = f; });
+    flightByKey = byKey;
     emit();
   }, onError);
 

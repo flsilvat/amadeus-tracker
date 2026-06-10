@@ -2,10 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from './context/AuthContext.jsx';
 import { useAppState } from './hooks/useAppState.js';
 import {
-  subscribeGroups, subscribeGroupFlights, archiveGroupNow, MOCK_GROUP, MOCK_FLIGHTS, isDemo,
+  subscribeGroups, subscribeGroupFlights, archiveGroupNow,
+  subscribeFlightGroups, subscribeCustomGroupFlights, createFlightGroup, renameFlightGroup,
+  deleteFlightGroup, addFlightToGroup, removeFlightFromGroup, archiveFlightNow, restoreFlightNow,
+  MOCK_GROUP, MOCK_FLIGHTS, isDemo,
 } from './lib/data.js';
 import { computeOdds } from './lib/odds.js';
-import { subscribeRecentCommands, enqueueRefreshGroup, enqueueRefreshAll, reEnqueueCommand, enqueueRescan, enqueueArchiveGroup } from './lib/commands.js';
+import {
+  subscribeRecentCommands, enqueueRefreshGroup, enqueueRefreshAll, reEnqueueCommand, enqueueRescan,
+  enqueueArchiveGroup, enqueueArchiveFlight, enqueueRestoreFlight, enqueueRefreshFlights,
+} from './lib/commands.js';
 import Login from './components/Login.jsx';
 import Section, { CARD_W } from './components/Section.jsx';
 import AddTrip from './components/AddTrip.jsx';
@@ -29,6 +35,7 @@ export default function App() {
 
 function Dashboard({ uid, demo, onSignOut }) {
   const app = useAppState(uid, demo);
+  const HOME = 'LHR'; // matches backend HOME_AIRPORT; used to split custom groups
 
   // ---- groups + flights (live, or mock in demo) --------------------------
   const [groups, setGroups] = useState(demo ? [MOCK_GROUP] : []);
@@ -38,10 +45,21 @@ function Dashboard({ uid, demo, onSignOut }) {
   const [showAdd, setShowAdd] = useState(false);
   const [commands, setCommands] = useState([]);
   const [queuedMsg, setQueuedMsg] = useState('');
+  const [showHidden, setShowHidden] = useState(false);
+
+  // Custom groups (curated cross-trip views). view = { kind:'trip'|'custom', id }
+  const [customGroups, setCustomGroups] = useState([]);
+  const [view, setView] = useState({ kind: 'trip', id: null });
+  const customGroup = view.kind === 'custom' ? customGroups.find((g) => g.id === view.id) || null : null;
 
   useEffect(() => {
     if (demo) return;
     return subscribeRecentCommands(setCommands, (e) => setErr(e.message));
+  }, [demo]);
+
+  useEffect(() => {
+    if (demo) return;
+    return subscribeFlightGroups(setCustomGroups, (e) => setErr(e.message));
   }, [demo]);
 
   useEffect(() => {
@@ -56,10 +74,15 @@ function Dashboard({ uid, demo, onSignOut }) {
   }, [demo]);
 
   useEffect(() => {
-    if (demo || !groupId) return;
+    if (demo) return;
     setFlights([]);
-    return subscribeGroupFlights(groupId, setFlights, (e) => setErr(e.message));
-  }, [demo, groupId]);
+    if (view.kind === 'custom') {
+      if (!customGroup) return;
+      return subscribeCustomGroupFlights(customGroup, setFlights, (e) => setErr(e.message));
+    }
+    if (!groupId) return;
+    return subscribeGroupFlights(groupId, setFlights, (e) => setErr(e.message), { includeHidden: showHidden });
+  }, [demo, view.kind, view.id, groupId, showHidden, customGroup && JSON.stringify(customGroup.flights)]);
 
   const group = groups.find((g) => g.id === groupId) || null;
 
@@ -78,10 +101,58 @@ function Dashboard({ uid, demo, onSignOut }) {
     }
   };
 
-  // ---- pass code: per-user override, else the group default --------------
-  const override = group ? app.passcodeFor(group.id) : null;
-  const myCode = override ? override.stfCode : (group ? group.myStfCode || '' : '');
-  const myDoj = override ? override.doj : (group ? group.myDoj || '' : '');
+  // ---- flight + custom-group actions -------------------------------------
+  const hideFlight = async (f) => {
+    try {
+      await archiveFlightNow(f.flightNo, f.isoDate);   // hides instantly everywhere
+      enqueueArchiveFlight(f.flightNo, f.isoDate);      // stop the PC refreshing it
+      setQueuedMsg(`Hid ${f.flightNo}. Toggle \u201cShow hidden\u201d to restore.`);
+    } catch (e) { setErr(e.message || 'Could not hide the flight.'); }
+  };
+  const restoreFlight = async (f) => {
+    try {
+      await restoreFlightNow(f.flightNo, f.isoDate);
+      enqueueRestoreFlight(f.flightNo, f.isoDate);
+      setQueuedMsg(`Restored ${f.flightNo}.`);
+    } catch (e) { setErr(e.message || 'Could not restore the flight.'); }
+  };
+  const removeFromGroup = async (f) => {
+    if (!customGroup) return;
+    try { await removeFlightFromGroup(customGroup, f); }
+    catch (e) { setErr(e.message || 'Could not remove from group.'); }
+  };
+  const addToGroup = async (f) => {
+    if (!customGroup) return;
+    try {
+      await addFlightToGroup(customGroup, f);
+      setQueuedMsg(`Added ${f.flightNo} to \u201c${customGroup.name}\u201d.`);
+    } catch (e) { setErr(e.message || 'Could not add to group.'); }
+  };
+  const newCustomGroup = async () => {
+    const name = window.prompt('Name this group (e.g. \u201cMy actual journey\u201d):', 'My journey');
+    if (!name) return;
+    try { const id = await createFlightGroup(name.trim(), uid); setView({ kind: 'custom', id }); }
+    catch (e) { setErr(e.message || 'Could not create the group.'); }
+  };
+  const deleteCustomGroup = async () => {
+    if (!customGroup) return;
+    if (!window.confirm(`Delete the group \u201c${customGroup.name}\u201d?\n\nThis only removes the curated view \u2014 no flights or data are deleted.`)) return;
+    try { await deleteFlightGroup(customGroup.id); setView({ kind: 'trip', id: groupId }); }
+    catch (e) { setErr(e.message || 'Could not delete the group.'); }
+  };
+  const refreshCustomGroup = () => {
+    if (!customGroup || !customGroup.flights || !customGroup.flights.length) return;
+    enqueueRefreshFlights(customGroup.flights, `Refresh ${customGroup.name}`);
+    setQueuedMsg('Refresh queued \u2014 updates loads for this group.');
+  };
+
+  // ---- pass code: per-user override, else the trip/group default ---------
+  const codeSource = view.kind === 'custom' ? customGroup : group;
+  const passcodeKey = codeSource ? (view.kind === 'custom' ? `cg:${codeSource.id}` : codeSource.id) : null;
+  const setPasscodeForView = (code, dojv) => { if (passcodeKey) app.setPasscode(passcodeKey, code, dojv); };
+  const override = passcodeKey ? app.passcodeFor(passcodeKey) : null;
+  const myCode = override ? override.stfCode : (codeSource ? codeSource.myStfCode || (group ? group.myStfCode : '') || '' : '');
+  const myDoj = override ? override.doj : (codeSource ? codeSource.myDoj || (group ? group.myDoj : '') || '' : '');
 
   // ---- view controls -----------------------------------------------------
   const [sortMode, setSortMode] = useState('time');
@@ -106,52 +177,82 @@ function Dashboard({ uid, demo, onSignOut }) {
 
   const sortFlights = (list) => {
     const arr = [...list];
+    // Chronological key: date first, then departure time. (Within a trip the
+    // date is constant, but custom groups can span dates, so time alone is wrong.)
+    const when = (f) => `${f.isoDate || ''} ${f.depTime || ''}`;
     if (sortMode === 'odds') {
       arr.sort((a, b) => {
         const ca = computeOdds(a, myCode, myDoj, app.confirmedSetFor(`${a.flightNo}_${a.isoDate}`)).color;
         const cb = computeOdds(b, myCode, myDoj, app.confirmedSetFor(`${b.flightNo}_${b.isoDate}`)).color;
         if (ODDS_RANK[ca] !== ODDS_RANK[cb]) return ODDS_RANK[ca] - ODDS_RANK[cb];
-        return (a.depTime || '').localeCompare(b.depTime || '');
+        return when(a).localeCompare(when(b));
       });
     } else {
-      arr.sort((a, b) => (a.depTime || '').localeCompare(b.depTime || ''));
+      arr.sort((a, b) => when(a).localeCompare(when(b)));
     }
     return arr;
   };
 
-  const outbound = useMemo(() => sortFlights(flights.filter((f) => f.direction === 'outbound')), [flights, sortMode, myCode, myDoj, app.state]);
-  const inbound = useMemo(() => sortFlights(flights.filter((f) => f.direction === 'inbound')), [flights, sortMode, myCode, myDoj, app.state]);
+  // Direction for the Outbound/Inbound split. Trip flights carry a stored
+  // `direction`; custom-group flights come from various trips, so derive it
+  // from the home airport (toward home = inbound, away = outbound).
+  const dirOf = (f) =>
+    f.destination === HOME ? 'inbound' : f.origin === HOME ? 'outbound' : (f.direction || 'outbound');
+  const outbound = useMemo(() => sortFlights(flights.filter((f) => dirOf(f) === 'outbound')), [flights, sortMode, myCode, myDoj, app.state]);
+  const inbound = useMemo(() => sortFlights(flights.filter((f) => dirOf(f) === 'inbound')), [flights, sortMode, myCode, myDoj, app.state]);
 
-  const shared = { ...app, openFlights, toggleOpen };
+  const inCustom = view.kind === 'custom';
+  const flightActions = {
+    mode: inCustom ? 'custom' : 'trip',
+    onHide: hideFlight,
+    onRestore: restoreFlight,
+    onRemoveFromGroup: removeFromGroup,
+    // in trip view, offer "add to a group" only if at least one custom group exists
+    customGroups: inCustom ? [] : customGroups,
+    onAddToGroup: async (f, gid) => {
+      const g = customGroups.find((x) => x.id === gid);
+      if (g) { try { await addFlightToGroup(g, f); setQueuedMsg(`Added ${f.flightNo} to “${g.name}”.`); } catch (e) { setErr(e.message); } }
+    },
+  };
+  const shared = { ...app, openFlights, toggleOpen, flightActions };
 
   return (
     <div className="max-w-[1320px] mx-auto px-3 py-5">
       <header className="mb-4 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-xl font-bold tracking-tight truncate">{group ? group.name : 'Staff travel odds'}</h1>
+          <h1 className="text-xl font-bold tracking-tight truncate">
+            {inCustom ? (customGroup ? customGroup.name : 'Group') : (group ? group.name : 'Staff travel odds')}
+          </h1>
           <p className="text-xs text-stone-500">
-            staff travel odds{demo && <span className="ml-1 text-amber-600 font-semibold">· demo</span>}
+            {inCustom ? 'custom group · live odds' : 'staff travel odds'}{demo && <span className="ml-1 text-amber-600 font-semibold">· demo</span>}
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 max-w-full">
-          {!demo && (
+          {!demo && !inCustom && (
             <button onClick={() => { setShowAdd((s) => !s); setQueuedMsg(''); }}
               className="btn-ink rounded-lg px-3 py-1.5 text-xs font-semibold transition">
               + Add trip
             </button>
           )}
-          {!demo && group && (
+          {!demo && !inCustom && group && (
             <button onClick={() => { enqueueRefreshGroup(group.id, `Refresh ${group.name}`); setQueuedMsg('Refresh queued — updates seat loads & queues.'); }}
               title="Re-run LL: update seat loads and standby queues for flights already found"
               className="text-xs font-semibold border border-stone-300 rounded-lg px-3 py-1.5 bg-white text-stone-600 hover:bg-stone-50 transition">
               Refresh loads
             </button>
           )}
-          {!demo && group && (
+          {!demo && !inCustom && group && (
             <button onClick={() => { enqueueRescan(group); setQueuedMsg('Re-scan queued — re-runs flight discovery to add any missed.'); }}
               title="Re-run AN: find flights that were missed when this trip was first added"
               className="text-xs font-semibold border border-stone-300 rounded-lg px-3 py-1.5 bg-white text-stone-600 hover:bg-stone-50 transition">
               Re-scan flights
+            </button>
+          )}
+          {!demo && inCustom && customGroup && (
+            <button onClick={refreshCustomGroup}
+              title="Re-run LL for just this group's flights"
+              className="text-xs font-semibold border border-stone-300 rounded-lg px-3 py-1.5 bg-white text-stone-600 hover:bg-stone-50 transition">
+              Refresh loads
             </button>
           )}
           {!demo && (
@@ -159,6 +260,31 @@ function Dashboard({ uid, demo, onSignOut }) {
           )}
         </div>
       </header>
+
+      {!demo && (groups.length > 0 || customGroups.length > 0) && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-4">
+          <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-wide mr-1">View</span>
+          {group && (
+            <button onClick={() => setView({ kind: 'trip', id: groupId })}
+              className={'text-xs font-semibold rounded-full px-3 py-1 transition ' +
+                (!inCustom ? 'btn-ink' : 'bg-white border border-stone-300 text-stone-600 hover:bg-stone-50')}>
+              {groups.length > 1 ? 'Trips' : (group.name)}
+            </button>
+          )}
+          {customGroups.map((g) => (
+            <button key={g.id} onClick={() => setView({ kind: 'custom', id: g.id })}
+              className={'text-xs font-semibold rounded-full px-3 py-1 transition ' +
+                (inCustom && customGroup && customGroup.id === g.id ? 'btn-ink' : 'bg-white border border-stone-300 text-stone-600 hover:bg-stone-50')}>
+              {g.name}
+            </button>
+          ))}
+          <button onClick={newCustomGroup}
+            title="Create a custom group — hand-pick flights from any trip onto one page"
+            className="text-xs font-semibold rounded-full px-3 py-1 border border-dashed border-stone-300 text-stone-500 hover:text-blue-600 hover:border-blue-300 transition">
+            + New group
+          </button>
+        </div>
+      )}
 
       {err && <p className="text-xs text-rose-600 mb-3">{err}</p>}
       {queuedMsg && <p className="text-xs text-blue-600 mb-3">{queuedMsg} It'll run when your work PC is online.</p>}
@@ -174,7 +300,7 @@ function Dashboard({ uid, demo, onSignOut }) {
         />
       )}
 
-      {groups.length === 0 && !demo ? (
+      {groups.length === 0 && customGroups.length === 0 && !demo ? (
         <div className="bg-white rounded-2xl border border-stone-200 p-6 text-sm text-stone-500">
           <p className="mb-3">No trips yet. Add one and your work PC will run the lookup next time it's online.</p>
           {!showAdd && (
@@ -187,32 +313,45 @@ function Dashboard({ uid, demo, onSignOut }) {
       ) : (
         <>
           <div className="bg-white rounded-2xl border border-stone-200 p-3 mb-4 flex flex-wrap items-end gap-3">
-            {groups.length > 1 && (
+            {!inCustom && groups.length > 1 && (
               <label className="flex flex-col gap-1">
                 <span className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide">Trip</span>
-                <select value={groupId || ''} onChange={(e) => setGroupId(e.target.value)}
+                <select value={groupId || ''} onChange={(e) => { setGroupId(e.target.value); setView({ kind: 'trip', id: e.target.value }); }}
                   className="text-sm border border-stone-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:border-blue-400">
                   {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
                 </select>
               </label>
             )}
-            {!demo && group && (
+            {!demo && !inCustom && group && (
+              <label className="flex items-center gap-1.5 self-end pb-1.5 text-[11px] text-stone-500">
+                <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} />
+                Show hidden
+              </label>
+            )}
+            {!demo && !inCustom && group && (
               <button onClick={archiveTrip}
                 title="Hide this trip and stop refreshing it — flights and history stay stored"
                 className="ml-auto order-last self-end pb-1.5 text-[11px] font-semibold text-stone-400 hover:text-rose-600 transition">
                 Archive trip
               </button>
             )}
+            {!demo && inCustom && customGroup && (
+              <button onClick={deleteCustomGroup}
+                title="Delete this curated view (no flights or data are removed)"
+                className="ml-auto order-last self-end pb-1.5 text-[11px] font-semibold text-stone-400 hover:text-rose-600 transition">
+                Delete group
+              </button>
+            )}
 
             <label className="flex flex-col gap-1">
               <span className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide">Pass code</span>
-              <input value={myCode} onChange={(e) => group && app.setPasscode(group.id, e.target.value, myDoj)}
+              <input value={myCode} onChange={(e) => setPasscodeForView(e.target.value, myDoj)}
                 placeholder="21/J19"
                 className="font-mono text-sm border border-stone-300 rounded-lg px-2.5 py-1.5 w-24 focus:outline-none focus:border-blue-400" />
             </label>
             <label className="flex flex-col gap-1">
               <span className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide">DOJ</span>
-              <input value={myDoj} onChange={(e) => group && app.setPasscode(group.id, myCode, e.target.value)}
+              <input value={myDoj} onChange={(e) => setPasscodeForView(myCode, e.target.value)}
                 placeholder="15JUN18"
                 className="font-mono text-sm border border-stone-300 rounded-lg px-2.5 py-1.5 w-24 focus:outline-none focus:border-blue-400" />
             </label>
@@ -277,7 +416,10 @@ function Dashboard({ uid, demo, onSignOut }) {
               : <>{out}{inb}</>;
           })()}
 
-          {flights.length === 0 && groupId && (
+          {flights.length === 0 && inCustom && (
+            <p className="text-sm text-stone-400">This group is empty. Switch to a trip and use a flight's “＋ group” action to add flights here.</p>
+          )}
+          {flights.length === 0 && !inCustom && groupId && (
             <p className="text-sm text-stone-400">No flights for this trip yet.</p>
           )}
         </>
