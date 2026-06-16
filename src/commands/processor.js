@@ -45,6 +45,31 @@ function summarize(type, result) {
 // Guards the brief window between a snapshot firing and the status update
 // propagating, so a command isn't picked up twice.
 const handled = new Set();
+const inFlightKeys = new Map(); // dedupeKey -> command id currently running
+
+// A stable key identifying "the same work". Duplicate clicks, double-enqueues,
+// and post-restart reclaims of the same logical task share a key, so we run it
+// once and skip the rest. Commands without a meaningful target (rare) fall back
+// to their own id, i.e. never deduped.
+function dedupeKey(cmd) {
+  const p = cmd.payload || {};
+  switch (cmd.type) {
+    case 'refreshGroup':
+    case 'archiveGroup':
+      return `${cmd.type}:${p.groupId || ''}`;
+    case 'refreshAll':
+      return 'refreshAll';
+    case 'refreshFlights':
+      // same set of flights = same key (order-independent)
+      return 'refreshFlights:' + (p.flights || [])
+        .map((f) => `${f.flightNo}_${f.isoDate}`).sort().join(',');
+    case 'archiveFlight':
+    case 'restoreFlight':
+      return `${cmd.type}:${p.flightNo || ''}_${p.isoDate || ''}`;
+    default:
+      return `id:${cmd.id}`;
+  }
+}
 
 export function startCommandProcessor() {
   logger.info('command processor listening for pending commands');
@@ -55,15 +80,28 @@ export function startCommandProcessor() {
     cmds.sort((a, b) => a.createdAtMs - b.createdAtMs); // oldest first
     for (const cmd of cmds) {
       if (handled.has(cmd.id)) continue;
+
+      // Dedup: if an identical task is already running, don't run this one too.
+      // Mark it done (superseded) so it leaves the queue and the UI clears.
+      const key = dedupeKey(cmd);
+      if (inFlightKeys.has(key)) {
+        handled.add(cmd.id);
+        logger.info({ id: cmd.id, type: cmd.type, supersededBy: inFlightKeys.get(key) },
+          'duplicate command superseded — skipping');
+        void completeCommand(cmd.id, { superseded: true }).catch(() => {});
+        continue;
+      }
+
       handled.add(cmd.id);
-      void processOne(cmd);
+      inFlightKeys.set(key, cmd.id);
+      void processOne(cmd, key);
     }
   });
 }
 
-async function processOne(cmd) {
+async function processOne(cmd, key) {
   const claimed = await claimCommand(cmd.id);
-  if (!claimed) return; // someone/something else took it, or it's gone
+  if (!claimed) { if (key) inFlightKeys.delete(key); return; } // taken elsewhere, or gone
   logger.info({ id: cmd.id, type: cmd.type }, 'processing command');
   try {
     const handler = HANDLERS[cmd.type];
@@ -74,5 +112,7 @@ async function processOne(cmd) {
   } catch (err) {
     await failCommand(cmd.id, err.message);
     logger.error({ id: cmd.id, type: cmd.type, err: err.message }, 'command failed');
+  } finally {
+    if (key) inFlightKeys.delete(key);
   }
 }

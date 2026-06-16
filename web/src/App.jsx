@@ -443,12 +443,14 @@ function CommandStrip({ commands, onRerun }) {
     return () => clearInterval(t);
   }, []);
 
-  // A command 'running' for over 2 min with no result is almost certainly stuck
-  // (the service died mid-run). Normal commands finish in well under a minute.
+  // A command 'running' for over 8 min with no result is almost certainly stuck
+  // (the service died mid-run). A full group refresh legitimately runs several
+  // minutes — many flights, ~15-20s each — so the threshold must clear that or
+  // a healthy group refresh would look "stuck".
   const isStale = (c) => {
     if (c.status !== 'running') return false;
     const ms = c.startedAt && c.startedAt.toMillis ? c.startedAt.toMillis() : null;
-    return ms ? now - ms > 120000 : false;
+    return ms ? now - ms > 480000 : false;
   };
 
   const counts = { pending: 0, running: 0, stale: 0, error: 0, done: 0 };
@@ -456,8 +458,11 @@ function CommandStrip({ commands, onRerun }) {
     if (isStale(c)) counts.stale++;
     else counts[c.status] = (counts[c.status] || 0) + 1;
   });
-  const hasActive = counts.pending + counts.running + counts.stale > 0;
-  const open = openPref === null ? hasActive : openPref;
+  // Auto-open ONLY for states that need attention (failed or genuinely stuck).
+  // Normal pending/running work — including long group refreshes — stays
+  // collapsed; the summary line still shows what's happening.
+  const needsAttention = counts.error + counts.stale > 0;
+  const open = openPref === null ? needsAttention : openPref;
 
   const summary = [
     counts.running ? `${counts.running} running` : null,
