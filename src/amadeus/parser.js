@@ -27,9 +27,9 @@ const AN_FLIGHT_RE = new RegExp(
   '(BA)\\s*' +                          // (3) marketing carrier (BA)
   '(\\d{1,4})\\s+' +                    // (4) flight digits
   '.*?' +                               // booking classes (lazy)
-  '/([A-Z]{3})\\s+' +                   // (5) origin
-  '(?:[A-Z0-9]{1,2}\\s+)?' +            //     optional origin terminal (SEA prints none)
-  '([A-Z]{3})\\s+\\S?\\s*' +            // (6) destination + optional terminal/D marker
+  '/([A-Z]{3})\\s*' +                   // (5) origin (terminal may be glued: /MAD4S)
+  '(?:[A-Z0-9]{1,2}\\s+)?' +            //     optional origin terminal (SEA prints none, MAD glues "4S")
+  '([A-Z]{3})\\s*(?:[A-Z0-9]{1,2})?\\s*' + // (6) destination + optional terminal (may be glued: MAD4S)
   '(\\d{4})\\s+' +                      // (7) departure HHMM
   '(\\d{4})' +                          // (8) arrival HHMM
   '(?:\\+\\d+)?' +                       // optional +N overnight day offset (e.g. "+1")
@@ -103,6 +103,14 @@ const Q_STF_RE = /OSI BA STF\s*(\S+).*?DOJ\s*(\d{2}[A-Z]{3}\d{2})/;
 const Q_ROUTE_RE = /^\s*([A-Z]{6})\s*$/;
 const END_OF_DISPLAY_RE = /END OF DISPLAY/;
 
+// Cabin (CAB column) normalization. Short-haul two-cabin aircraft (e.g. A320
+// family) report Club Europe as cabin "C", where long-haul reports "J" —
+// same cabin, different code. Normalize to the canonical F/J/W/M so storage
+// (SQLite has fixed j_* columns), the Firestore mirror, and the odds engine
+// all see Club as J regardless of aircraft. Note this is about the CAB
+// summary rows only; booking-class letters are handled by SUBCABIN_TO_CABIN.
+const LL_CABIN_NORMALIZE = { C: 'J' };
+
 // Subcabin (booking class letter) → main cabin mapping.
 // Ported from the original HTML's cabinDisplayMap.
 const SUBCABIN_TO_CABIN = {
@@ -130,7 +138,8 @@ export function parseLL(text) {
     if (h) { [, flightNo, amadeusDate, queryOrigin] = h; continue; }
     const m = LL_ROW_RE.exec(line);
     if (!m) continue;
-    const [, cabin, leg, equipment, cap, adj, uns, bc, nc] = m;
+    const [, rawCabin, leg, equipment, cap, adj, uns, bc, nc] = m;
+    const cabin = LL_CABIN_NORMALIZE[rawCabin] || rawCabin;
     if (cabinsSeen.has(cabin)) continue;
     cabinsSeen.add(cabin);
     cabins.push({
