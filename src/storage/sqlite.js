@@ -391,7 +391,7 @@ export function listObservations(flightId, limit = 200) {
  */
 export function latestObservationsForGroup(groupId) {
   return getDb().prepare(`
-    SELECT f.*, o.*
+    SELECT f.*, o.*, f.id AS local_flight_id, o.id AS observation_id
     FROM flights f
     LEFT JOIN observations o ON o.id = (
       SELECT id FROM observations

@@ -5,6 +5,20 @@ import {
 import { db } from '../firebase.js';
 import { CABIN_MAP } from './odds.js';
 import { flightTiming } from './time.js';
+import { LOCAL_MODE, localFetch, pollLocal } from './local.js';
+
+const LOCAL_FLIGHT_GROUPS_KEY = 'amadeus-tracker-flight-groups';
+const localFlightGroupListeners = new Set();
+
+function readLocalFlightGroups() {
+  try { return JSON.parse(localStorage.getItem(LOCAL_FLIGHT_GROUPS_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function writeLocalFlightGroups(groups) {
+  localStorage.setItem(LOCAL_FLIGHT_GROUPS_KEY, JSON.stringify(groups));
+  localFlightGroupListeners.forEach((cb) => cb(groups));
+}
 
 // ---------------------------------------------------------------------------
 // Mappers: backend Firestore docs -> the view-model the cards expect.
@@ -54,10 +68,75 @@ function buildFlight(flightDoc, latestObs) {
   };
 }
 
+function buildLocalFlight(row) {
+  const cabins = {};
+  for (const [key, prefix] of [['F', 'f'], ['J', 'j'], ['W', 'w'], ['M', 'm']]) {
+    if (row[`${prefix}_capacity`] != null || row[`${prefix}_booked`] != null) {
+      cabins[key] = { capacity: row[`${prefix}_capacity`], booked: row[`${prefix}_booked`], adj: 0 };
+    }
+  }
+  return buildFlight({
+    flightNo: row.flight_no,
+    isoDate: row.iso_date,
+    origin: row.origin,
+    destination: row.destination,
+    direction: row.direction,
+    depTime: row.dep_time,
+    arrTime: row.arr_time,
+    equipment: row.equipment,
+    active: row.active !== 0,
+  }, row.query_time ? {
+    cabins,
+    queue: (row.queue || []).map((q) => ({
+      lineNo: q.line_no,
+      name: q.passenger_name,
+      reservation: q.reservation,
+      subcabin: q.subcabin,
+      cabin: q.cabin,
+      ptc: q.ptc,
+      stfCode: q.stf_code,
+      stfBucketNum: q.stf_bucket_num,
+      stfBucketLetter: q.stf_bucket_letter,
+      stfClassPref: q.stf_class_pref,
+      stfClassPrio: q.stf_class_prio,
+      doj: q.doj,
+      position: q.position,
+    })),
+    queryTime: row.query_time,
+    daysToDeparture: row.days_to_departure,
+  } : null);
+}
+
+function mapLocalGroup(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    outbound: row.outbound_origin ? {
+      origin: row.outbound_origin,
+      destination: row.outbound_destination,
+      date: row.outbound_date,
+    } : null,
+    inbound: row.inbound_origin ? {
+      origin: row.inbound_origin,
+      destination: row.inbound_destination,
+      date: row.inbound_date,
+    } : null,
+    myStfCode: row.my_stf_code,
+    myDoj: row.my_doj,
+    createdAt: row.created_at,
+    active: row.active !== 0,
+  };
+}
+
 // Subscribe to trips. We read all group docs and filter client-side so trips
 // created before the `active` field existed (older groups) still show — only
 // explicitly archived ones (active === false) are hidden.
 export function subscribeGroups(cb, onError) {
+  if (LOCAL_MODE) {
+    return pollLocal(() => localFetch('/groups'), (groups) => {
+      cb(groups.map(mapLocalGroup).filter((g) => g.active));
+    }, onError);
+  }
   const q = query(collection(db, 'groups'));
   // createdAt is an ISO string mirrored from the service; tolerate Firestore
   // Timestamps and missing values (missing -> 0 -> sorts to the bottom).
@@ -80,6 +159,7 @@ export function subscribeGroups(cb, onError) {
 // disappears from every device right away; an archiveGroup command should also
 // be queued so the work PC's local DB syncs and stops refreshing it.
 export function archiveGroupNow(groupId) {
+  if (LOCAL_MODE) return localFetch(`/groups/${encodeURIComponent(groupId)}/archive`, { method: 'POST' });
   return updateDoc(doc(db, 'groups', groupId), { active: false });
 }
 
@@ -89,6 +169,13 @@ export function archiveGroupNow(groupId) {
 // We read all observations for the group (single equality filter -> no
 // composite index needed) and reduce to the latest per flight client-side.
 export function subscribeGroupFlights(groupId, cb, onError, { includeHidden = false } = {}) {
+  if (LOCAL_MODE) {
+    return pollLocal(
+      () => localFetch(`/groups/${encodeURIComponent(groupId)}/latest`),
+      (rows) => cb(rows.filter((row) => includeHidden || row.active !== 0).map(buildLocalFlight)),
+      onError
+    );
+  }
   const flightsQ = query(collection(db, 'flights'), where('groupId', '==', groupId));
   const obsQ = query(collection(db, 'observations'), where('groupId', '==', groupId));
 
@@ -132,9 +219,11 @@ export function subscribeGroupFlights(groupId, cb, onError, { includeHidden = fa
 // active so it vanishes from every device at once; an archiveFlight command
 // should also be queued so the work PC stops refreshing it.
 export function archiveFlightNow(flightNo, isoDate) {
+  if (LOCAL_MODE) return localFetch('/flights/archive', { method: 'POST', body: JSON.stringify({ flightNo, isoDate }) });
   return updateDoc(doc(db, 'flights', `${flightNo}_${isoDate}`), { active: false });
 }
 export function restoreFlightNow(flightNo, isoDate) {
+  if (LOCAL_MODE) return localFetch('/flights/restore', { method: 'POST', body: JSON.stringify({ flightNo, isoDate }) });
   return updateDoc(doc(db, 'flights', `${flightNo}_${isoDate}`), { active: true });
 }
 
@@ -145,6 +234,11 @@ export function restoreFlightNow(flightNo, isoDate) {
 // ---------------------------------------------------------------------------
 
 export function subscribeFlightGroups(cb, onError) {
+  if (LOCAL_MODE) {
+    cb(readLocalFlightGroups());
+    localFlightGroupListeners.add(cb);
+    return () => localFlightGroupListeners.delete(cb);
+  }
   return onSnapshot(query(collection(db, 'flightGroups')), (snap) => {
     const groups = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     const ts = (g) => (g.createdAt && g.createdAt.toMillis ? g.createdAt.toMillis() : 0);
@@ -153,7 +247,30 @@ export function subscribeFlightGroups(cb, onError) {
   }, onError);
 }
 
+export async function importCloudFlightGroups() {
+  const snap = await getDocs(collection(db, 'flightGroups'));
+  const cloudGroups = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const current = readLocalFlightGroups();
+  const byId = new Map(current.map((g) => [g.id, g]));
+  cloudGroups.forEach((g) => byId.set(g.id, g));
+  const merged = [...byId.values()];
+  if (LOCAL_MODE) writeLocalFlightGroups(merged);
+  return cloudGroups.length;
+}
+
 export async function createFlightGroup(name, uid) {
+  if (LOCAL_MODE) {
+    const group = {
+      id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: name || 'My journey',
+      createdBy: uid || null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      flights: [],
+    };
+    writeLocalFlightGroups([...readLocalFlightGroups(), group]);
+    return group.id;
+  }
   const ref = await addDoc(collection(db, 'flightGroups'), {
     name: name || 'My journey',
     createdBy: uid || null,
@@ -165,17 +282,40 @@ export async function createFlightGroup(name, uid) {
 }
 
 export function renameFlightGroup(id, name) {
+  if (LOCAL_MODE) {
+    writeLocalFlightGroups(readLocalFlightGroups().map((g) =>
+      g.id === id ? { ...g, name, updatedAt: new Date().toISOString() } : g));
+    return Promise.resolve();
+  }
   return updateDoc(doc(db, 'flightGroups', id), { name, updatedAt: serverTimestamp() });
 }
 
 export function deleteFlightGroup(id) {
+  if (LOCAL_MODE) {
+    writeLocalFlightGroups(readLocalFlightGroups().filter((g) => g.id !== id));
+    return Promise.resolve();
+  }
   return deleteDoc(doc(db, 'flightGroups', id));
 }
 
 const refKey = (r) => `${r.flightNo}_${r.isoDate}`;
 
 export function setFlightGroupFlights(id, flights) {
+  if (LOCAL_MODE) {
+    writeLocalFlightGroups(readLocalFlightGroups().map((g) =>
+      g.id === id ? { ...g, flights, updatedAt: new Date().toISOString() } : g));
+    return Promise.resolve();
+  }
   return updateDoc(doc(db, 'flightGroups', id), { flights, updatedAt: serverTimestamp() });
+}
+
+export function setFlightGroupDetails(id, details) {
+  if (LOCAL_MODE) {
+    writeLocalFlightGroups(readLocalFlightGroups().map((g) =>
+      g.id === id ? { ...g, ...details, updatedAt: new Date().toISOString() } : g));
+    return Promise.resolve();
+  }
+  return updateDoc(doc(db, 'flightGroups', id), { ...details, updatedAt: serverTimestamp() });
 }
 
 export function addFlightToGroup(group, flight) {
@@ -194,6 +334,18 @@ export function removeFlightFromGroup(group, flight) {
 // latest observations across ALL trips. Returns card view-models (same shape
 // as subscribeGroupFlights) in the group's stored order.
 export function subscribeCustomGroupFlights(group, cb, onError) {
+  if (LOCAL_MODE) {
+    return pollLocal(async () => {
+      const allGroups = await localFetch('/groups');
+      const rows = await Promise.all(allGroups.map((g) => localFetch(`/groups/${encodeURIComponent(g.id)}/latest`)));
+      const flightByKey = {};
+      rows.flat().forEach((row) => { flightByKey[`${row.flight_no}_${row.iso_date}`] = row; });
+      return (group.flights || []).map((ref) => {
+        const row = flightByKey[`${ref.flightNo}_${ref.isoDate}`];
+        return row ? buildLocalFlight(row) : { ...ref, cabins: {}, queue: [] };
+      });
+    }, cb, onError);
+  }
   const flightsQ = query(collection(db, 'flights'));
   const obsQ = query(collection(db, 'observations'));
 

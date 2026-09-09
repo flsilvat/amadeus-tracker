@@ -1,6 +1,7 @@
 // Phase 4 — write command docs the local service picks up, and watch their status.
 import { addDoc, collection, onSnapshot, query, serverTimestamp, where } from 'firebase/firestore';
 import { db, auth } from '../firebase.js';
+import { LOCAL_MODE, localFetch } from './local.js';
 
 function genGroupId(outbound) {
   const base = `${outbound.origin}-${outbound.destination}-${outbound.date.replace(/-/g, '')}`.toLowerCase();
@@ -9,6 +10,24 @@ function genGroupId(outbound) {
 }
 
 async function enqueue(type, payload, label) {
+  if (LOCAL_MODE) {
+    const routes = {
+      createGroup: { method: 'POST', path: '/groups', body: payload.group },
+      refreshGroup: { method: 'POST', path: `/groups/${encodeURIComponent(payload.groupId)}/refresh` },
+      refreshAll: { method: 'POST', path: '/refresh-all' },
+      refreshFlights: { method: 'POST', path: '/refresh-flights', body: payload },
+      archiveGroup: { method: 'POST', path: `/groups/${encodeURIComponent(payload.groupId)}/archive` },
+      archiveFlight: { method: 'POST', path: '/flights/archive', body: payload },
+      restoreFlight: { method: 'POST', path: '/flights/restore', body: payload },
+    };
+    const route = routes[type];
+    if (!route) throw new Error(`Unsupported local command: ${type}`);
+    await localFetch(route.path, {
+      method: route.method,
+      ...(route.body === undefined ? {} : { body: JSON.stringify(route.body) }),
+    });
+    return { local: true, type, label };
+  }
   const uid = auth.currentUser ? auth.currentUser.uid : null;
   return addDoc(collection(db, 'commands'), {
     type,
@@ -61,6 +80,10 @@ export function enqueueRefreshFlights(refs, label) {
   return enqueue('refreshFlights', { flights }, label || 'Refresh group flights');
 }
 
+export function enqueueRefreshFlight(flight, label) {
+  return enqueueRefreshFlights([flight], label || `Refresh ${flight.flightNo}`);
+}
+
 // Re-run AN discovery for an EXISTING trip to pick up flights missed the first
 // time (e.g. dropped by an NMD earlier). Uses the same trip id, so it upserts —
 // it never duplicates or deletes flights, and leaves loads/queues alone.
@@ -80,6 +103,10 @@ export function reEnqueueCommand(cmd) {
 
 // Recent commands for this user, newest first (client-sorted -> no index).
 export function subscribeRecentCommands(cb, onError) {
+  if (LOCAL_MODE) {
+    cb([]);
+    return () => {};
+  }
   const uid = auth.currentUser ? auth.currentUser.uid : null;
   const q = uid
     ? query(collection(db, 'commands'), where('createdBy', '==', uid))

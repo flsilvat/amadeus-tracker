@@ -23,13 +23,13 @@
 //   "OPERATED BY AMERICAN AIRLINES"
 const AN_FLIGHT_RE = new RegExp(
   '^\\s*(\\d+)\\s*' +                   // (1) line number REQUIRED
-  '([A-Z0-9]{2}:)?\\s*' +               // (2) "AA:" style codeshare prefix
+  '([A-Z0-9]{0,2}:)?\\s*' +             // (2) codeshare prefix: "AA:" or bare ":" (carrier blank, e.g. Horizon-as-Alaska)
   '(BA)\\s*' +                          // (3) marketing carrier (BA)
   '(\\d{1,4})\\s+' +                    // (4) flight digits
   '.*?' +                               // booking classes (lazy)
   '/([A-Z]{3})\\s*' +                   // (5) origin (terminal may be glued: /MAD4S)
-  '(?:[A-Z0-9]{1,2}\\s+)?' +            //     optional origin terminal (SEA prints none, MAD glues "4S")
-  '([A-Z]{3})\\s*(?:[A-Z0-9]{1,2})?\\s*' + // (6) destination + optional terminal (may be glued: MAD4S)
+  '(?:[A-Z0-9*]{1,2}\\s+)?' +            //     optional origin terminal (SEA prints none, MAD glues "4S")
+  '([A-Z]{3})\\s*(?:[A-Z0-9*]{1,2})?\\s*' + // (6) destination + optional terminal (may be glued: MAD4S)
   '(\\d{4})\\s+' +                      // (7) departure HHMM
   '(\\d{4})' +                          // (8) arrival HHMM
   '(?:\\+\\d+)?' +                       // optional +N overnight day offset (e.g. "+1")

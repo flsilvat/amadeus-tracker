@@ -161,11 +161,19 @@ export function FlightCard({ flight, myCode, myDoj, confirmedSet, onToggleConfir
               )}
             </div>
           </div>
-          <button onClick={onToggleStar} aria-label={starred ? 'Unstar flight' : 'Star flight'} aria-pressed={starred}
-            className={'shrink-0 leading-none text-[18px] transition ' +
-              (starred ? 'text-amber-600' : 'text-stone-300 hover:text-amber-500')}>
-            <span aria-hidden="true">{starred ? '★' : '☆'}</span>
-          </button>
+          <div className="shrink-0 flex items-center gap-2">
+            {actions?.onRefresh && (
+              <button onClick={() => actions.onRefresh(flight)} aria-label={`Refresh ${flight.flightNo}`} title={`Refresh ${flight.flightNo}`}
+                className="leading-none text-[17px] text-stone-300 hover:text-blue-600 transition">
+                <span aria-hidden="true">↻</span>
+              </button>
+            )}
+            <button onClick={onToggleStar} aria-label={starred ? 'Unstar flight' : 'Star flight'} aria-pressed={starred}
+              className={'leading-none text-[18px] transition ' +
+                (starred ? 'text-amber-600' : 'text-stone-300 hover:text-amber-500')}>
+              <span aria-hidden="true">{starred ? '★' : '☆'}</span>
+            </button>
+          </div>
         </div>
 
         {/* loads: free row + details toggle on the same line; cap/bkd appear when open */}

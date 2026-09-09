@@ -5,16 +5,18 @@ import {
   subscribeGroups, subscribeGroupFlights, archiveGroupNow,
   subscribeFlightGroups, subscribeCustomGroupFlights, createFlightGroup, renameFlightGroup,
   deleteFlightGroup, addFlightToGroup, removeFlightFromGroup, archiveFlightNow, restoreFlightNow,
+  setFlightGroupDetails, importCloudFlightGroups,
   MOCK_GROUP, MOCK_FLIGHTS, isDemo,
 } from './lib/data.js';
 import { computeOdds } from './lib/odds.js';
 import {
-  subscribeRecentCommands, enqueueRefreshGroup, enqueueRefreshAll, reEnqueueCommand, enqueueRescan,
+  subscribeRecentCommands, enqueueRefreshGroup, enqueueRefreshAll, enqueueRefreshFlight, reEnqueueCommand, enqueueRescan,
   enqueueArchiveGroup, enqueueArchiveFlight, enqueueRestoreFlight, enqueueRefreshFlights,
 } from './lib/commands.js';
 import Login from './components/Login.jsx';
 import Section, { CARD_W } from './components/Section.jsx';
 import AddTrip from './components/AddTrip.jsx';
+import { LOCAL_MODE } from './lib/local.js';
 
 const segBtn = (active) =>
   'px-3 py-1.5 text-xs font-semibold transition ' +
@@ -28,7 +30,7 @@ export default function App() {
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-stone-400 text-sm">Loading…</div>;
   }
-  if (!demo && !user) return <Login />;
+  if (!demo && !user && !LOCAL_MODE) return <Login />;
 
   return <Dashboard uid={user ? user.uid : null} demo={demo} onSignOut={signOutUser} />;
 }
@@ -134,6 +136,14 @@ function Dashboard({ uid, demo, onSignOut }) {
     try { const id = await createFlightGroup(name.trim(), uid); setView({ kind: 'custom', id }); }
     catch (e) { setErr(e.message || 'Could not create the group.'); }
   };
+  const importCloudGroups = async () => {
+    try {
+      const count = await importCloudFlightGroups();
+      setQueuedMsg(`Imported ${count} curated group${count === 1 ? '' : 's'} from Firebase.`);
+    } catch (e) {
+      setErr(`Could not import cloud groups: ${e.message}`);
+    }
+  };
   const deleteCustomGroup = async () => {
     if (!customGroup) return;
     if (!window.confirm(`Delete the group \u201c${customGroup.name}\u201d?\n\nThis only removes the curated view \u2014 no flights or data are deleted.`)) return;
@@ -146,10 +156,21 @@ function Dashboard({ uid, demo, onSignOut }) {
     setQueuedMsg('Refresh queued \u2014 updates loads for this group.');
   };
 
+  const refreshFlight = (flight) => {
+    enqueueRefreshFlight(flight, `Refresh ${flight.flightNo}`);
+    setQueuedMsg(`Refresh queued for ${flight.flightNo}.`);
+  };
+
   // ---- pass code: per-user override, else the trip/group default ---------
   const codeSource = view.kind === 'custom' ? customGroup : group;
   const passcodeKey = codeSource ? (view.kind === 'custom' ? `cg:${codeSource.id}` : codeSource.id) : null;
-  const setPasscodeForView = (code, dojv) => { if (passcodeKey) app.setPasscode(passcodeKey, code, dojv); };
+  const setPasscodeForView = (code, dojv) => {
+    if (!passcodeKey) return;
+    app.setPasscode(passcodeKey, code, dojv);
+    if (view.kind === 'custom' && customGroup) {
+      setFlightGroupDetails(customGroup.id, { myStfCode: code || '', myDoj: dojv || '' }).catch((e) => setErr(e.message));
+    }
+  };
   const override = passcodeKey ? app.passcodeFor(passcodeKey) : null;
   const myCode = override ? override.stfCode : (codeSource ? codeSource.myStfCode || (group ? group.myStfCode : '') || '' : '');
   const myDoj = override ? override.doj : (codeSource ? codeSource.myDoj || (group ? group.myDoj : '') || '' : '');
@@ -206,12 +227,19 @@ function Dashboard({ uid, demo, onSignOut }) {
     mode: inCustom ? 'custom' : 'trip',
     onHide: hideFlight,
     onRestore: restoreFlight,
+    onRefresh: refreshFlight,
     onRemoveFromGroup: removeFromGroup,
     // in trip view, offer "add to a group" only if at least one custom group exists
     customGroups: inCustom ? [] : customGroups,
     onAddToGroup: async (f, gid) => {
       const g = customGroups.find((x) => x.id === gid);
-      if (g) { try { await addFlightToGroup(g, f); setQueuedMsg(`Added ${f.flightNo} to “${g.name}”.`); } catch (e) { setErr(e.message); } }
+      if (g) {
+        try {
+          await addFlightToGroup(g, f);
+          await setFlightGroupDetails(g.id, { myStfCode: myCode || '', myDoj: myDoj || '' });
+          setQueuedMsg(`Added ${f.flightNo} to “${g.name}”.`);
+        } catch (e) { setErr(e.message); }
+      }
     },
   };
   const shared = { ...app, openFlights, toggleOpen, flightActions };
@@ -255,7 +283,7 @@ function Dashboard({ uid, demo, onSignOut }) {
               Refresh loads
             </button>
           )}
-          {!demo && (
+          {!demo && !LOCAL_MODE && (
             <button onClick={onSignOut} className="text-xs text-stone-400 hover:text-stone-600">Sign out</button>
           )}
         </div>
@@ -283,11 +311,16 @@ function Dashboard({ uid, demo, onSignOut }) {
             className="text-xs font-semibold rounded-full px-3 py-1 border border-dashed border-stone-300 text-stone-500 hover:text-blue-600 hover:border-blue-300 transition">
             + New group
           </button>
+          {LOCAL_MODE && <button onClick={importCloudGroups}
+            title="Copy existing curated groups from Firebase into this browser"
+            className="text-xs font-semibold rounded-full px-3 py-1 border border-stone-300 text-stone-500 hover:text-blue-600 hover:border-blue-300 transition">
+            Import cloud groups
+          </button>}
         </div>
       )}
 
       {err && <p className="text-xs text-rose-600 mb-3">{err}</p>}
-      {queuedMsg && <p className="text-xs text-blue-600 mb-3">{queuedMsg} It'll run when your work PC is online.</p>}
+      {queuedMsg && <p className="text-xs text-blue-600 mb-3">{queuedMsg}{!LOCAL_MODE && " It'll run when your work PC is online."}</p>}
 
       {showAdd && !demo && (
         <AddTrip onClose={() => setShowAdd(false)} onQueued={(n) => setQueuedMsg(`Queued “${n}”.`)} />
@@ -302,7 +335,7 @@ function Dashboard({ uid, demo, onSignOut }) {
 
       {groups.length === 0 && customGroups.length === 0 && !demo ? (
         <div className="bg-white rounded-2xl border border-stone-200 p-6 text-sm text-stone-500">
-          <p className="mb-3">No trips yet. Add one and your work PC will run the lookup next time it's online.</p>
+          <p className="mb-3">No trips yet. Add one and the local service will run the lookup.</p>
           {!showAdd && (
             <button onClick={() => setShowAdd(true)} className="btn-ink rounded-lg px-4 py-2 text-sm font-semibold transition">
               + Add your first trip

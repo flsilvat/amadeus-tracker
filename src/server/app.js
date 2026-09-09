@@ -7,6 +7,10 @@ import {
   createOrUpdateGroupAndDiscover,
   refreshGroup,
   refreshAllActiveGroups,
+  refreshFlights,
+  archiveGroup,
+  archiveFlight,
+  restoreFlight,
   runRawCommand,
 } from '../service.js';
 import {
@@ -108,10 +112,34 @@ export function createApp() {
     res.json({ results });
   }));
 
+  app.post('/refresh-flights', asyncH(async (req, res) => {
+    const flights = z.array(z.object({
+      flightNo: z.string().min(1),
+      isoDate: z.string().min(1),
+      origin: z.string().optional(),
+    })).parse(req.body.flights || []);
+    res.json(await refreshFlights(flights));
+  }));
+
+  app.post('/groups/:id/archive', asyncH(async (req, res) => {
+    res.json(await archiveGroup(req.params.id));
+  }));
+
+  app.post('/flights/archive', asyncH(async (req, res) => {
+    res.json(await archiveFlight(req.body));
+  }));
+
+  app.post('/flights/restore', asyncH(async (req, res) => {
+    res.json(await restoreFlight(req.body));
+  }));
+
   // ----- flights & observations (read API for the future React app) -----
 
   app.get('/groups/:id/latest', (req, res) => {
-    res.json(latestObservationsForGroup(req.params.id));
+    res.json(latestObservationsForGroup(req.params.id).map((row) => ({
+      ...row,
+      queue: row.local_flight_id ? latestQueueForFlight(row.local_flight_id) : [],
+    })));
   });
 
   app.get('/flights/:id', (req, res) => {

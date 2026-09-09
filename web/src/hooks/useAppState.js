@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase.js';
+import { LOCAL_MODE } from '../lib/local.js';
 
 // Shape persisted at /appState/{uid}:
 // {
@@ -16,7 +17,14 @@ export function useAppState(uid, demo) {
 
   // Load + live-sync (skip Firestore entirely in demo mode).
   useEffect(() => {
-    if (demo || !uid) { ready.current = true; return; }
+    if (demo) { ready.current = true; return; }
+    if (LOCAL_MODE) {
+      try { setState({ ...EMPTY, ...JSON.parse(localStorage.getItem('amadeus-tracker-state') || '{}') }); }
+      catch { setState(EMPTY); }
+      ready.current = true;
+      return;
+    }
+    if (!uid) { ready.current = true; return; }
     const ref = doc(db, 'appState', uid);
     return onSnapshot(ref, (snap) => {
       setState({ ...EMPTY, ...(snap.exists() ? snap.data() : {}) });
@@ -27,7 +35,9 @@ export function useAppState(uid, demo) {
   // Persist on change (debounced, merge write). No-op in demo mode.
   const persist = useCallback((next) => {
     setState(next);
-    if (demo || !uid) return;
+    if (demo) return;
+    if (LOCAL_MODE) { localStorage.setItem('amadeus-tracker-state', JSON.stringify(next)); return; }
+    if (!uid) return;
     setDoc(doc(db, 'appState', uid), next, { merge: true }).catch((e) =>
       console.warn('appState write failed', e)
     );
@@ -39,7 +49,8 @@ export function useAppState(uid, demo) {
       if (favorites[flightKey]) delete favorites[flightKey];
       else favorites[flightKey] = true;
       const next = { ...prev, favorites };
-      if (!demo && uid) setDoc(doc(db, 'appState', uid), { favorites }, { merge: true }).catch(() => {});
+      if (LOCAL_MODE) localStorage.setItem('amadeus-tracker-state', JSON.stringify(next));
+      else if (!demo && uid) setDoc(doc(db, 'appState', uid), { favorites }, { merge: true }).catch(() => {});
       return next;
     });
   }, [uid, demo]);
@@ -52,7 +63,8 @@ export function useAppState(uid, demo) {
       else forFlight[paxKey] = true;
       confirmations[flightKey] = forFlight;
       const next = { ...prev, confirmations };
-      if (!demo && uid) setDoc(doc(db, 'appState', uid), { confirmations }, { merge: true }).catch(() => {});
+      if (LOCAL_MODE) localStorage.setItem('amadeus-tracker-state', JSON.stringify(next));
+      else if (!demo && uid) setDoc(doc(db, 'appState', uid), { confirmations }, { merge: true }).catch(() => {});
       return next;
     });
   }, [uid, demo]);
@@ -61,7 +73,8 @@ export function useAppState(uid, demo) {
     setState((prev) => {
       const passcodes = { ...prev.passcodes, [groupId]: { stfCode, doj } };
       const next = { ...prev, passcodes };
-      if (!demo && uid) setDoc(doc(db, 'appState', uid), { passcodes }, { merge: true }).catch(() => {});
+      if (LOCAL_MODE) localStorage.setItem('amadeus-tracker-state', JSON.stringify(next));
+      else if (!demo && uid) setDoc(doc(db, 'appState', uid), { passcodes }, { merge: true }).catch(() => {});
       return next;
     });
   }, [uid, demo]);
