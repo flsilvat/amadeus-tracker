@@ -5,7 +5,7 @@ import {
   subscribeGroups, subscribeGroupFlights, archiveGroupNow,
   subscribeFlightGroups, subscribeCustomGroupFlights, createFlightGroup, renameFlightGroup,
   deleteFlightGroup, addFlightToGroup, removeFlightFromGroup, archiveFlightNow, restoreFlightNow,
-  setFlightGroupDetails, importCloudFlightGroups,
+  setFlightGroupDetails,
   MOCK_GROUP, MOCK_FLIGHTS, isDemo,
 } from './lib/data.js';
 import { computeOdds } from './lib/odds.js';
@@ -135,14 +135,6 @@ function Dashboard({ uid, demo, onSignOut }) {
     if (!name) return;
     try { const id = await createFlightGroup(name.trim(), uid); setView({ kind: 'custom', id }); }
     catch (e) { setErr(e.message || 'Could not create the group.'); }
-  };
-  const importCloudGroups = async () => {
-    try {
-      const count = await importCloudFlightGroups();
-      setQueuedMsg(`Imported ${count} curated group${count === 1 ? '' : 's'} from Firebase.`);
-    } catch (e) {
-      setErr(`Could not import cloud groups: ${e.message}`);
-    }
   };
   const deleteCustomGroup = async () => {
     if (!customGroup) return;
@@ -311,11 +303,6 @@ function Dashboard({ uid, demo, onSignOut }) {
             className="text-xs font-semibold rounded-full px-3 py-1 border border-dashed border-stone-300 text-stone-500 hover:text-blue-600 hover:border-blue-300 transition">
             + New group
           </button>
-          {LOCAL_MODE && <button onClick={importCloudGroups}
-            title="Copy existing curated groups from Firebase into this browser"
-            className="text-xs font-semibold rounded-full px-3 py-1 border border-stone-300 text-stone-500 hover:text-blue-600 hover:border-blue-300 transition">
-            Import cloud groups
-          </button>}
         </div>
       )}
 

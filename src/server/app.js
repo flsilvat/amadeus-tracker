@@ -21,7 +21,12 @@ import {
   getFlight,
   listObservations,
   latestObservationsForGroup,
+  latestObservationsForAllFlights,
   latestQueueForFlight,
+  listFlightGroups,
+  upsertFlightGroup,
+  updateFlightGroup,
+  deleteFlightGroup,
 } from '../storage/sqlite.js';
 
 export function createApp() {
@@ -133,6 +138,83 @@ export function createApp() {
     res.json(await restoreFlight(req.body));
   }));
 
+  // ----- curated flight groups (cross-trip "custom groups") -----
+  // Local-mode replacement for Firestore's flightGroups collection: the React
+  // app reads and writes these here, so the list is shared by every browser
+  // on this PC instead of living in one browser's localStorage.
+
+  const flightRefSchema = z.object({
+    flightNo: z.string().min(1),
+    isoDate: z.string().min(1),
+    origin: z.string().optional().nullable(),
+    destination: z.string().optional().nullable(),
+  }).passthrough();
+
+  // Timestamps arrive as ISO strings, or as serialised Firestore Timestamps
+  // ({ seconds, nanoseconds }) when importing an older browser-side copy.
+  const isoOrUndefined = (v) => {
+    if (typeof v === 'string' && v) return v;
+    if (v && typeof v.seconds === 'number') return new Date(v.seconds * 1000).toISOString();
+    return undefined;
+  };
+
+  const flightGroupSchema = z.object({
+    id: z.string().min(1).optional(),
+    name: z.string().min(1),
+    flights: z.array(flightRefSchema).default([]),
+    // Free-form on purpose: the app saves the pass code as the user types it.
+    myStfCode: z.string().optional().nullable(),
+    myDoj: z.string().optional().nullable(),
+    createdBy: z.string().optional().nullable(),
+    createdAt: z.any().optional(),
+    updatedAt: z.any().optional(),
+  });
+
+  const flightGroupPatchSchema = z.object({
+    name: z.string().min(1).optional(),
+    flights: z.array(flightRefSchema).optional(),
+    myStfCode: z.string().optional().nullable(),
+    myDoj: z.string().optional().nullable(),
+  });
+
+  const newFlightGroupId = () => `fg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  const normaliseFlightGroup = (g) => ({
+    ...g,
+    id: g.id || newFlightGroupId(),
+    createdAt: isoOrUndefined(g.createdAt),
+    updatedAt: isoOrUndefined(g.updatedAt),
+  });
+
+  app.get('/flight-groups', (req, res) => {
+    res.json(listFlightGroups());
+  });
+
+  app.post('/flight-groups', (req, res) => {
+    const g = flightGroupSchema.parse(req.body);
+    res.json(upsertFlightGroup(normaliseFlightGroup(g)));
+  });
+
+  // Bulk upsert that keeps ids. Used by the app to migrate groups an older
+  // build saved in the browser's localStorage, and by
+  // scripts/import-firestore-flight-groups.js.
+  app.post('/flight-groups/import', (req, res) => {
+    const groups = z.array(flightGroupSchema).parse(req.body.groups || []);
+    const imported = groups.map((g) => upsertFlightGroup(normaliseFlightGroup(g)));
+    res.json({ imported: imported.length, groups: imported });
+  });
+
+  app.put('/flight-groups/:id', (req, res) => {
+    const patch = flightGroupPatchSchema.parse(req.body);
+    const updated = updateFlightGroup(req.params.id, patch);
+    if (!updated) return res.status(404).json({ error: 'not found' });
+    res.json(updated);
+  });
+
+  app.delete('/flight-groups/:id', (req, res) => {
+    deleteFlightGroup(req.params.id);
+    res.json({ deleted: req.params.id });
+  });
+
   // ----- flights & observations (read API for the future React app) -----
 
   app.get('/groups/:id/latest', (req, res) => {
@@ -140,6 +222,13 @@ export function createApp() {
       ...row,
       queue: row.local_flight_id ? latestQueueForFlight(row.local_flight_id) : [],
     })));
+  });
+
+  // Latest observation (+ queue) for every stored flight across all trips —
+  // what curated groups render from. Registered before /flights/:id so
+  // "latest" isn't parsed as an id.
+  app.get('/flights/latest', (req, res) => {
+    res.json(latestObservationsForAllFlights());
   });
 
   app.get('/flights/:id', (req, res) => {

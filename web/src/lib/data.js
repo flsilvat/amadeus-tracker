@@ -1,5 +1,5 @@
 import {
-  addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, query,
+  addDoc, collection, deleteDoc, doc, onSnapshot, query,
   serverTimestamp, setDoc, updateDoc, where,
 } from 'firebase/firestore';
 import { db } from '../firebase.js';
@@ -7,17 +7,58 @@ import { CABIN_MAP } from './odds.js';
 import { flightTiming } from './time.js';
 import { LOCAL_MODE, localFetch, pollLocal } from './local.js';
 
-const LOCAL_FLIGHT_GROUPS_KEY = 'amadeus-tracker-flight-groups';
-const localFlightGroupListeners = new Set();
+// ---------------------------------------------------------------------------
+// Curated groups in LOCAL_MODE live in the local service's SQLite database
+// (GET/POST/PUT/DELETE /flight-groups), so every browser on this PC sees the
+// same list. An older build kept them in this browser's localStorage under
+// the key below; the first poll moves any such groups into the service.
+// ---------------------------------------------------------------------------
 
-function readLocalFlightGroups() {
-  try { return JSON.parse(localStorage.getItem(LOCAL_FLIGHT_GROUPS_KEY) || '[]'); }
-  catch { return []; }
+const LEGACY_LOCAL_FLIGHT_GROUPS_KEY = 'amadeus-tracker-flight-groups';
+const localFlightGroupListeners = new Set();
+let legacyGroupsMigrated = false;
+
+function mapLocalFlightGroup(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    flights: row.flights || [],
+    myStfCode: row.my_stf_code || '',
+    myDoj: row.my_doj || '',
+    createdBy: row.created_by || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
-function writeLocalFlightGroups(groups) {
-  localStorage.setItem(LOCAL_FLIGHT_GROUPS_KEY, JSON.stringify(groups));
+// Fetch the current list and push it to every subscriber. Called by the poll
+// and right after each mutation, so the UI updates without waiting for the
+// next poll.
+async function loadLocalFlightGroups() {
+  const groups = (await localFetch('/flight-groups')).map(mapLocalFlightGroup);
   localFlightGroupListeners.forEach((cb) => cb(groups));
+  return groups;
+}
+
+async function updateLocalFlightGroup(id, patch) {
+  await localFetch(`/flight-groups/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) });
+  await loadLocalFlightGroups();
+}
+
+async function migrateLegacyLocalFlightGroups() {
+  if (legacyGroupsMigrated) return;
+  let legacy = [];
+  try { legacy = JSON.parse(localStorage.getItem(LEGACY_LOCAL_FLIGHT_GROUPS_KEY) || '[]'); }
+  catch { legacy = []; }
+  if (!Array.isArray(legacy)) legacy = [];
+  const valid = legacy.filter((g) => g && g.id && g.name);
+  if (valid.length) {
+    await localFetch('/flight-groups/import', { method: 'POST', body: JSON.stringify({ groups: valid }) });
+    // Keep a backup copy in the browser in case anything needs recovering.
+    localStorage.setItem(`${LEGACY_LOCAL_FLIGHT_GROUPS_KEY}.migrated`, JSON.stringify(legacy));
+  }
+  localStorage.removeItem(LEGACY_LOCAL_FLIGHT_GROUPS_KEY);
+  legacyGroupsMigrated = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,9 +276,12 @@ export function restoreFlightNow(flightNo, isoDate) {
 
 export function subscribeFlightGroups(cb, onError) {
   if (LOCAL_MODE) {
-    cb(readLocalFlightGroups());
     localFlightGroupListeners.add(cb);
-    return () => localFlightGroupListeners.delete(cb);
+    const stop = pollLocal(async () => {
+      await migrateLegacyLocalFlightGroups();
+      await loadLocalFlightGroups();
+    }, () => {}, onError);
+    return () => { localFlightGroupListeners.delete(cb); stop(); };
   }
   return onSnapshot(query(collection(db, 'flightGroups')), (snap) => {
     const groups = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -247,29 +291,14 @@ export function subscribeFlightGroups(cb, onError) {
   }, onError);
 }
 
-export async function importCloudFlightGroups() {
-  const snap = await getDocs(collection(db, 'flightGroups'));
-  const cloudGroups = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  const current = readLocalFlightGroups();
-  const byId = new Map(current.map((g) => [g.id, g]));
-  cloudGroups.forEach((g) => byId.set(g.id, g));
-  const merged = [...byId.values()];
-  if (LOCAL_MODE) writeLocalFlightGroups(merged);
-  return cloudGroups.length;
-}
-
 export async function createFlightGroup(name, uid) {
   if (LOCAL_MODE) {
-    const group = {
-      id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      name: name || 'My journey',
-      createdBy: uid || null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      flights: [],
-    };
-    writeLocalFlightGroups([...readLocalFlightGroups(), group]);
-    return group.id;
+    const created = await localFetch('/flight-groups', {
+      method: 'POST',
+      body: JSON.stringify({ name: name || 'My journey', createdBy: uid || null, flights: [] }),
+    });
+    await loadLocalFlightGroups();
+    return created.id;
   }
   const ref = await addDoc(collection(db, 'flightGroups'), {
     name: name || 'My journey',
@@ -282,18 +311,15 @@ export async function createFlightGroup(name, uid) {
 }
 
 export function renameFlightGroup(id, name) {
-  if (LOCAL_MODE) {
-    writeLocalFlightGroups(readLocalFlightGroups().map((g) =>
-      g.id === id ? { ...g, name, updatedAt: new Date().toISOString() } : g));
-    return Promise.resolve();
-  }
+  if (LOCAL_MODE) return updateLocalFlightGroup(id, { name });
   return updateDoc(doc(db, 'flightGroups', id), { name, updatedAt: serverTimestamp() });
 }
 
-export function deleteFlightGroup(id) {
+export async function deleteFlightGroup(id) {
   if (LOCAL_MODE) {
-    writeLocalFlightGroups(readLocalFlightGroups().filter((g) => g.id !== id));
-    return Promise.resolve();
+    await localFetch(`/flight-groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await loadLocalFlightGroups();
+    return;
   }
   return deleteDoc(doc(db, 'flightGroups', id));
 }
@@ -301,20 +327,12 @@ export function deleteFlightGroup(id) {
 const refKey = (r) => `${r.flightNo}_${r.isoDate}`;
 
 export function setFlightGroupFlights(id, flights) {
-  if (LOCAL_MODE) {
-    writeLocalFlightGroups(readLocalFlightGroups().map((g) =>
-      g.id === id ? { ...g, flights, updatedAt: new Date().toISOString() } : g));
-    return Promise.resolve();
-  }
+  if (LOCAL_MODE) return updateLocalFlightGroup(id, { flights });
   return updateDoc(doc(db, 'flightGroups', id), { flights, updatedAt: serverTimestamp() });
 }
 
 export function setFlightGroupDetails(id, details) {
-  if (LOCAL_MODE) {
-    writeLocalFlightGroups(readLocalFlightGroups().map((g) =>
-      g.id === id ? { ...g, ...details, updatedAt: new Date().toISOString() } : g));
-    return Promise.resolve();
-  }
+  if (LOCAL_MODE) return updateLocalFlightGroup(id, details);
   return updateDoc(doc(db, 'flightGroups', id), { ...details, updatedAt: serverTimestamp() });
 }
 
@@ -336,13 +354,24 @@ export function removeFlightFromGroup(group, flight) {
 export function subscribeCustomGroupFlights(group, cb, onError) {
   if (LOCAL_MODE) {
     return pollLocal(async () => {
-      const allGroups = await localFetch('/groups');
-      const rows = await Promise.all(allGroups.map((g) => localFetch(`/groups/${encodeURIComponent(g.id)}/latest`)));
+      // One request for every stored flight (all trips, archived included).
+      const rows = await localFetch('/flights/latest');
+      // The same flight can belong to several trips; keep the copy with the
+      // freshest observation, and prefer a non-hidden copy on a tie.
       const flightByKey = {};
-      rows.flat().forEach((row) => { flightByKey[`${row.flight_no}_${row.iso_date}`] = row; });
+      rows.forEach((row) => {
+        const key = `${row.flight_no}_${row.iso_date}`;
+        const prev = flightByKey[key];
+        if (!prev) { flightByKey[key] = row; return; }
+        const t = String(row.query_time || '');
+        const tPrev = String(prev.query_time || '');
+        if (t > tPrev || (t === tPrev && row.active !== 0 && prev.active === 0)) flightByKey[key] = row;
+      });
       return (group.flights || []).map((ref) => {
         const row = flightByKey[`${ref.flightNo}_${ref.isoDate}`];
-        return row ? buildLocalFlight(row) : { ...ref, cabins: {}, queue: [] };
+        // Fall back to the stored ref so the card still renders (without
+        // loads) instead of vanishing — same as the Firestore path below.
+        return row ? buildLocalFlight(row) : buildFlight({ ...ref, direction: undefined }, null);
       });
     }, cb, onError);
   }

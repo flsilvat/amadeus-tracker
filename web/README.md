@@ -178,3 +178,43 @@ Build locally to mirror what CI does: `npm run build` then `npm run preview`.
   doc, the app uses those directly.)
 - **Your state** (`src/hooks/useAppState.js`) — favorites, confirmations, and pass-code
   overrides persist per user at `appState/{uid}`, syncing across your devices.
+
+---
+
+## 7. Local mode (no Firebase)
+
+If Firebase is unreachable (e.g. a work network that blocks Google APIs), the app can
+talk straight to the tracker service on this PC instead. In `web/.env` set:
+
+```
+VITE_LOCAL_MODE=true
+VITE_API_URL=http://localhost:3737
+```
+
+and in the root `.env` keep `FIRESTORE_ENABLED=false`. Then run the service
+(`npm run dev` in the repo root) and the app (`npm run dev` in `web/`), and open
+`http://localhost:5173/amadeus-tracker/`. No sign-in is needed.
+
+What lives where in local mode:
+
+- **Trips, flights, loads, queues, curated groups** — the service's SQLite database
+  (`data/tracker.db`). Curated groups use the `flight_groups` table via
+  `/flight-groups`, so they are the same in every browser on this PC.
+- **Favorites, per-passenger confirmations, pass-code overrides** — this browser's
+  `localStorage`. They are per browser and per URL (`localhost` and `127.0.0.1`
+  count as different sites), so stick to one URL.
+- **Actions** (add trip, refresh, hide) call the service directly and run
+  immediately; there is no command queue or activity strip.
+
+**Curated groups made before switching to local mode** still sit in Firestore. To
+copy them into SQLite, from a network where Firebase is reachable run (in the repo
+root):
+
+```bash
+node scripts/import-firestore-flight-groups.js --dry-run   # list them
+node scripts/import-firestore-flight-groups.js             # import
+```
+
+Groups that an earlier local-mode build kept in the browser are moved into SQLite
+automatically the first time the app loads (a backup stays in `localStorage` under
+`amadeus-tracker-flight-groups.migrated`).

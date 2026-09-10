@@ -117,6 +117,21 @@ export function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_q_flight_time ON queue_entries(flight_id, query_time);
     CREATE INDEX IF NOT EXISTS idx_q_obs ON queue_entries(observation_id);
+
+    -- Curated, cross-trip flight groups ("custom groups" in the web app). In
+    -- local mode these replace Firestore's flightGroups collection so every
+    -- browser on this PC sees the same list. flights is a JSON array of
+    -- { flightNo, isoDate, origin, destination } refs in display order.
+    CREATE TABLE IF NOT EXISTS flight_groups (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      flights TEXT NOT NULL DEFAULT '[]',
+      my_stf_code TEXT,
+      my_doj TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   logger.info({ path: config.DB_PATH }, 'database ready');
@@ -425,4 +440,115 @@ export function latestQueueForFlight(flightId) {
     )
     ORDER BY q.position ASC
   `).all(flightId);
+}
+
+// ---------- curated flight groups (cross-trip views) ----------
+
+function parseFlightRefs(json) {
+  try {
+    const refs = JSON.parse(json || '[]');
+    return Array.isArray(refs) ? refs : [];
+  } catch {
+    return [];
+  }
+}
+
+function mapFlightGroupRow(row) {
+  return row ? { ...row, flights: parseFlightRefs(row.flights) } : null;
+}
+
+export function listFlightGroups() {
+  return getDb()
+    .prepare(`SELECT * FROM flight_groups ORDER BY created_at ASC`)
+    .all()
+    .map(mapFlightGroupRow);
+}
+
+export function getFlightGroup(id) {
+  return mapFlightGroupRow(getDb().prepare(`SELECT * FROM flight_groups WHERE id = ?`).get(id));
+}
+
+// Insert or fully replace a curated group. Keeps the caller's id so imports
+// (from Firestore, or from an older browser-side copy) are idempotent.
+export function upsertFlightGroup(g) {
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO flight_groups (id, name, flights, my_stf_code, my_doj, created_by, created_at, updated_at)
+    VALUES (@id, @name, @flights, @my_stf_code, @my_doj, @created_by, @created_at, @updated_at)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      flights = excluded.flights,
+      my_stf_code = excluded.my_stf_code,
+      my_doj = excluded.my_doj,
+      created_by = COALESCE(excluded.created_by, flight_groups.created_by),
+      updated_at = excluded.updated_at
+  `).run({
+    id: g.id,
+    name: g.name,
+    flights: JSON.stringify(g.flights ?? []),
+    my_stf_code: g.myStfCode ?? null,
+    my_doj: g.myDoj ?? null,
+    created_by: g.createdBy ?? null,
+    created_at: g.createdAt ?? now,
+    updated_at: g.updatedAt ?? now,
+  });
+  return getFlightGroup(g.id);
+}
+
+// Partial update: only the keys present in `patch` change. Returns the
+// updated row, or null if no group has that id.
+export function updateFlightGroup(id, patch) {
+  const sets = [];
+  const params = { id, updated_at: new Date().toISOString() };
+  if (patch.name !== undefined) { sets.push('name = @name'); params.name = patch.name; }
+  if (patch.flights !== undefined) { sets.push('flights = @flights'); params.flights = JSON.stringify(patch.flights ?? []); }
+  if (patch.myStfCode !== undefined) { sets.push('my_stf_code = @my_stf_code'); params.my_stf_code = patch.myStfCode ?? null; }
+  if (patch.myDoj !== undefined) { sets.push('my_doj = @my_doj'); params.my_doj = patch.myDoj ?? null; }
+  sets.push('updated_at = @updated_at');
+  const result = getDb().prepare(`UPDATE flight_groups SET ${sets.join(', ')} WHERE id = @id`).run(params);
+  return result.changes ? getFlightGroup(id) : null;
+}
+
+export function deleteFlightGroup(id) {
+  return getDb().prepare(`DELETE FROM flight_groups WHERE id = ?`).run(id);
+}
+
+/**
+ * Latest observation for EVERY stored flight (all trips, archived included),
+ * each with its queue snapshot attached. Curated groups reference flights
+ * from any trip, so this is what renders them — two queries for the whole
+ * database instead of one request per trip.
+ */
+export function latestObservationsForAllFlights() {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT f.*, o.*, f.id AS local_flight_id, o.id AS observation_id
+    FROM flights f
+    LEFT JOIN observations o ON o.id = (
+      SELECT id FROM observations
+      WHERE flight_id = f.id
+      ORDER BY query_time DESC
+      LIMIT 1
+    )
+    ORDER BY f.iso_date, f.dep_time
+  `).all();
+
+  const queueByObs = new Map();
+  db.prepare(`
+    SELECT q.*
+    FROM queue_entries q
+    WHERE q.observation_id IN (
+      SELECT (SELECT id FROM observations WHERE flight_id = f.id ORDER BY query_time DESC LIMIT 1)
+      FROM flights f
+    )
+    ORDER BY q.observation_id, q.position ASC
+  `).all().forEach((q) => {
+    if (!queueByObs.has(q.observation_id)) queueByObs.set(q.observation_id, []);
+    queueByObs.get(q.observation_id).push(q);
+  });
+
+  return rows.map((row) => ({
+    ...row,
+    queue: row.observation_id ? (queueByObs.get(row.observation_id) || []) : [],
+  }));
 }
