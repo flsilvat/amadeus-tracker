@@ -157,6 +157,16 @@ const Q_HEADER_RE = /^\s*(\d{3})\s+(.+?)\s+([A-Z0-9]+)\s+([A-Z])\s*$/;
 const Q_PTC_RE = /^\s*PTC\s+(SBY|BKB|ADT)\b/;
 const Q_STF_RE = /OSI BA STF\s*(\S+).*?DOJ\s*(\d{2}[A-Z]{3}\d{2})/;
 const Q_ROUTE_RE = /^\s*([A-Z]{6})\s*$/;
+
+// A detail row belonging to the passenger block we're currently reading
+// (PTC/OSI/SSR), or blank filler. A real capture never puts anything else
+// between a header and its own detail rows — but a screen copy taken while
+// JFE was still mid-render can be torn there, splicing in leftover screen
+// content (e.g. a stray prompt glyph, or the next capture attempt's banner
+// line) before the real continuation. Bailing out as soon as we see a line
+// that doesn't look like one of our own detail rows stops us from reading
+// into a DIFFERENT passenger's PTC/OSI further down the splice.
+const Q_CONTINUATION_RE = /^\s*(?:PTC|OSI|SSR)\b/;
 const END_OF_DISPLAY_RE = /END OF DISPLAY/;
 
 // Cabin (CAB column) normalization. Short-haul two-cabin aircraft (e.g. A320
@@ -255,12 +265,14 @@ export function parseLLQueue(linesOrText) {
 
     let ptc = null, stfCode = null, doj = null;
     for (let j = i + 1; j < nextHdr; j++) {
+      const line = lines[j];
+      if (line.trim() !== '' && !Q_CONTINUATION_RE.test(line)) break; // torn capture — stop before reading another pax's data
       if (!ptc) {
-        const mp = Q_PTC_RE.exec(lines[j]);
+        const mp = Q_PTC_RE.exec(line);
         if (mp) ptc = mp[1];
       }
       if (!stfCode) {
-        const ms = Q_STF_RE.exec(lines[j]);
+        const ms = Q_STF_RE.exec(line);
         if (ms) { stfCode = ms[1]; doj = ms[2]; }
       }
       if (ptc && stfCode) break;
