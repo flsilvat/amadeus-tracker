@@ -178,6 +178,16 @@ Build locally to mirror what CI does: `npm run build` then `npm run preview`.
   doc, the app uses those directly.)
 - **Your state** (`src/hooks/useAppState.js`) — favorites, confirmations, and pass-code
   overrides persist per user at `appState/{uid}`, syncing across your devices.
+- **Copy as image** (`src/lib/screenshot.js`, `src/components/ExportSheet.jsx`) — the
+  camera buttons (one card, one section, or the whole page via **Copy image**) render the
+  cards into an off-screen sheet, rasterise it at 2x and put a PNG on the clipboard, ready
+  to paste into a chat. The **Image** toggle picks the shape: **Phone** is one column at
+  iPhone width (390pt), **Desktop** keeps the cards at their on-screen width and packs them
+  into masonry columns (`src/lib/exportLayout.js` picks the column count, and puts
+  Outbound/Inbound side by side when that fits, to land near 16:9 with the fewest holes).
+  Cards that are open on screen export with their passenger queue; closed ones export
+  collapsed. Where the browser refuses the clipboard write (plain-http origin, denied
+  permission) the PNG is downloaded instead.
 
 ---
 

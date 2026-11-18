@@ -5,6 +5,17 @@ const MONTHS = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const CABIN_SHORT = { F: 'First', J: 'Club', W: 'Eco+', M: 'Eco' };
 
+// Small stroke camera glyph for the "copy as image" buttons (Feather "camera").
+export function CameraIcon({ size = 15 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+      <circle cx="12" cy="13" r="4" />
+    </svg>
+  );
+}
+
 // Unified loads grid. Collapsed: a single "free" row of net seats per cabin
 // (F/J/W/M) with small mono tags. Expanded: drops "cap" and "bkd" rows beneath,
 // aligned in the same four cabin columns. Tight column gap; JetBrains Mono.
@@ -52,24 +63,25 @@ function Fragmentish({ children }) {
 }
 
 
-// Compact "last updated" stamp: time only if today (e.g. "14:32"),
-// otherwise day + time (e.g. "7 Jun 14:32").
+// "Last updated" stamp: always day + month + time (e.g. "9 Oct 14:32"), even
+// when the loads were captured today. The cards get screenshotted and shared,
+// so the date has to be on the image.
 function fmtStamp(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  const hm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  return d.toDateString() === new Date().toDateString()
-    ? hm
-    : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + hm;
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' +
+    d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
-export function QueueTable({ result, myCode, confirmedSet, onToggleConfirm }) {
+// readOnly: no confirm checkboxes (used by the image export). Confirmed pax
+// still render struck through so the picture matches what the UI shows.
+export function QueueTable({ result, myCode, confirmedSet, onToggleConfirm, readOnly = false }) {
   const { queue, dividerIndex, meKeys = new Set() } = result;
   const matched = meKeys.size > 0;
   const Divider = () => (
     <tr>
-      <td colSpan="6" className="py-1">
+      <td colSpan={readOnly ? 5 : 6} className="py-1">
         <div className="flex items-center gap-2 text-blue-600 font-sans font-semibold text-[10px]">
           <div className="flex-1 border-t-2 border-dashed border-blue-300" />
           {matched ? 'YOU ↑' : 'YOU'} · {myCode}
@@ -83,7 +95,7 @@ export function QueueTable({ result, myCode, confirmedSet, onToggleConfirm }) {
       <table className="w-full text-[11px] font-mono tnum">
         <thead>
           <tr className="text-stone-400 text-left">
-            <th className="w-6"></th><th>Name</th><th>Cab</th><th>PNR</th><th>Code</th><th>DOJ</th>
+            {!readOnly && <th className="w-6"></th>}<th>Name</th><th>Cab</th><th>PNR</th><th>Code</th><th>DOJ</th>
           </tr>
         </thead>
         <tbody>
@@ -95,10 +107,12 @@ export function QueueTable({ result, myCode, confirmedSet, onToggleConfirm }) {
               <Fragmentish key={k + idx}>
                 {idx === dividerIndex && myCode && <Divider />}
                 <tr className={confirmed ? 'text-stone-300 line-through' : isMe ? 'text-blue-700 bg-blue-50/70' : 'text-stone-700'}>
-                  <td className="text-center">
-                    <input type="checkbox" checked={confirmed} onChange={() => onToggleConfirm(k)}
-                      title="Mark confirmed (remove from queue + odds)" />
-                  </td>
+                  {!readOnly && (
+                    <td className="text-center">
+                      <input type="checkbox" checked={confirmed} onChange={() => onToggleConfirm(k)}
+                        title="Mark confirmed (remove from queue + odds)" />
+                    </td>
+                  )}
                   <td className="pr-1 whitespace-nowrap" title={p.name}>{(p.name || '').slice(0, 14)}</td>
                   <td className="text-center">{p.subcabin}</td>
                   <td className="whitespace-nowrap">{p.reservation}</td>
@@ -115,7 +129,10 @@ export function QueueTable({ result, myCode, confirmedSet, onToggleConfirm }) {
   );
 }
 
-export function FlightCard({ flight, myCode, myDoj, confirmedSet, onToggleConfirm, starred, onToggleStar, open, onToggleOpen, actions }) {
+// snapshot: static rendering for the image export — the same card without
+// buttons or checkboxes. `open` still decides whether the passenger queue
+// shows, so the picture carries exactly the detail that is on screen.
+export function FlightCard({ flight, myCode, myDoj, confirmedSet, onToggleConfirm, starred, onToggleStar, open, onToggleOpen, actions, snapshot = false }) {
   const result = useMemo(() => computeOdds(flight, myCode, myDoj, confirmedSet), [flight, myCode, myDoj, confirmedSet]);
   const meta = ODDS_META[result.color];
   const fnNum = flight.flightNo.slice(0, 2) + (+flight.flightNo.slice(2)); // BA49
@@ -134,46 +151,70 @@ export function FlightCard({ flight, myCode, myDoj, confirmedSet, onToggleConfir
       ? (CABIN_SHORT[result.myCabin] || 'Eco')
       : result.color === 'red' ? 'Unlikely' : 'Set code';
 
+  const detailsToggle = (extra = '') => !snapshot && (
+    <button onClick={onToggleOpen}
+      className={'shrink-0 font-mono text-[11px] text-stone-400 hover:text-stone-700 transition flex items-center gap-1 ' + extra}>
+      details <span aria-hidden="true">{open ? '▴' : '▾'}</span>
+    </button>
+  );
+  // Lives on the loads footer line (the roomiest row), not in the header:
+  // every icon up there steals width from the route/pill row on a 300px card.
+  const snapshotBtn = !snapshot && actions?.onSnapshot && (
+    <button onClick={() => actions.onSnapshot(flight)} aria-label={`Copy ${fnNum} as an image`} title="Copy this card as an image"
+      className="shrink-0 leading-none text-stone-300 hover:text-blue-600 transition">
+      <CameraIcon size={14} />
+    </button>
+  );
+
   return (
     <div className={'bg-white border-2 rounded-2xl shadow-sm flex flex-col overflow-hidden ' + meta.cls + (hidden ? ' opacity-60' : '')}>
       <div className="p-3 flex flex-col gap-1.5">
-        {/* headline: route + flight no + aircraft + pill, with the box-less star */}
+        {/* headline: route + flight no + aircraft + pill, with the box-less star.
+            Only this row shares its width with the icons. The date/time row is
+            a sibling spanning the full card, so long-haul times such as
+            "12:25–09:10+1 · 12h45" never wrap under the date on a 300px card.
+            flex-1 (not shrink-to-content) matters for the image export: the
+            rasteriser copies computed widths onto its clone and draws text a
+            hair wider, so a block sized exactly to its text wraps and
+            overflows there. Slack prevents that. */}
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-mono font-medium text-[19px] leading-none tracking-tight">
-                {flight.origin}<span className="text-stone-300">→</span>{flight.destination}
-              </span>
-              <span className="font-mono text-[11px] leading-none tnum">
-                <span className="text-stone-800 font-medium">{fnNum}</span>
-                {flight.equipment && <span className="text-stone-400">({flight.equipment})</span>}
-              </span>
-              <span className={'font-mono text-[11px] font-medium px-2 py-0.5 rounded-md ' + meta.pill}>{pillLabel}</span>
-              {hidden && <span className="text-[9px] font-semibold text-stone-400 uppercase">hidden</span>}
-            </div>
-            <div className="text-[13px] text-stone-500 mt-1 flex items-center gap-2 flex-wrap leading-tight">
-              <span>{dateShort}</span>
-              {flight.depTime && flight.arrTime && (
-                <span className="font-mono text-[11px] tnum text-stone-400">
-                  <span className="text-stone-800">{flight.depTime}</span>–{flight.arrTime}{flight.arrDayOffset > 0 && '+' + flight.arrDayOffset}
-                  {durStr && <span> · {durStr}</span>}
-                </span>
-              )}
-            </div>
+          <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
+            <span className="font-mono font-medium text-[19px] leading-none tracking-tight">
+              {flight.origin}<span className="text-stone-300">→</span>{flight.destination}
+            </span>
+            <span className="font-mono text-[11px] leading-none tnum">
+              <span className="text-stone-800 font-medium">{fnNum}</span>
+              {flight.equipment && <span className="text-stone-400">({flight.equipment})</span>}
+            </span>
+            <span className={'font-mono text-[11px] font-medium px-2 py-0.5 rounded-md ' + meta.pill}>{pillLabel}</span>
+            {hidden && <span className="text-[9px] font-semibold text-stone-400 uppercase">hidden</span>}
           </div>
           <div className="shrink-0 flex items-center gap-2">
-            {actions?.onRefresh && (
+            {!snapshot && actions?.onRefresh && (
               <button onClick={() => actions.onRefresh(flight)} aria-label={`Refresh ${flight.flightNo}`} title={`Refresh ${flight.flightNo}`}
                 className="leading-none text-[17px] text-stone-300 hover:text-blue-600 transition">
                 <span aria-hidden="true">↻</span>
               </button>
             )}
-            <button onClick={onToggleStar} aria-label={starred ? 'Unstar flight' : 'Star flight'} aria-pressed={starred}
-              className={'leading-none text-[18px] transition ' +
-                (starred ? 'text-amber-600' : 'text-stone-300 hover:text-amber-500')}>
-              <span aria-hidden="true">{starred ? '★' : '☆'}</span>
-            </button>
+            {snapshot ? (
+              starred && <span className="leading-none text-[18px] text-amber-600" aria-hidden="true">★</span>
+            ) : (
+              <button onClick={onToggleStar} aria-label={starred ? 'Unstar flight' : 'Star flight'} aria-pressed={starred}
+                className={'leading-none text-[18px] transition ' +
+                  (starred ? 'text-amber-600' : 'text-stone-300 hover:text-amber-500')}>
+                <span aria-hidden="true">{starred ? '★' : '☆'}</span>
+              </button>
+            )}
           </div>
+        </div>
+        <div className="text-[13px] text-stone-500 -mt-0.5 flex items-center gap-2 flex-wrap leading-tight">
+          <span>{dateShort}</span>
+          {flight.depTime && flight.arrTime && (
+            <span className="font-mono text-[11px] tnum text-stone-400">
+              <span className="text-stone-800">{flight.depTime}</span>–{flight.arrTime}{flight.arrDayOffset > 0 && '+' + flight.arrDayOffset}
+              {durStr && <span> · {durStr}</span>}
+            </span>
+          )}
         </div>
 
         {/* loads: free row + details toggle on the same line; cap/bkd appear when open */}
@@ -181,27 +222,24 @@ export function FlightCard({ flight, myCode, myDoj, confirmedSet, onToggleConfir
           <div className="mt-1.5">
             <div className="flex items-start justify-between gap-2">
               <CabinStrip cabins={flight.cabins} expanded={open} queue={result.badge !== null ? result.badge : (flight.queue ? flight.queue.length : null)} />
-              <button onClick={onToggleOpen}
-                className="shrink-0 font-mono text-[11px] text-stone-400 hover:text-stone-700 transition flex items-center gap-1 leading-none mt-0.5">
-                details <span aria-hidden="true">{open ? '▴' : '▾'}</span>
-              </button>
+              {detailsToggle('leading-none mt-0.5')}
             </div>
-            <div className="font-mono text-[10px] text-stone-400 tnum mt-1.5">
-              {result.seats.total} seats · {result.seats.premiumTotal} premium
-              {flight.observedAt && (
-                <span title={'Loads captured ' + new Date(flight.observedAt).toLocaleString('en-GB')}>
-                  {' · '}{fmtStamp(flight.observedAt)}
-                </span>
-              )}
+            <div className="font-mono text-[10px] text-stone-400 tnum mt-1.5 flex items-center justify-between gap-2">
+              <span>
+                {result.seats.total} seats · {result.seats.premiumTotal} premium
+                {flight.observedAt && (
+                  <span title={'Loads captured ' + new Date(flight.observedAt).toLocaleString('en-GB')}>
+                    {' · '}{fmtStamp(flight.observedAt)}
+                  </span>
+                )}
+              </span>
+              {snapshotBtn}
             </div>
           </div>
         ) : (
           <div className="flex items-center justify-between mt-1.5">
             <span className="font-mono text-[11px] text-stone-400">no loads yet</span>
-            <button onClick={onToggleOpen}
-              className="font-mono text-[11px] text-stone-400 hover:text-stone-700 transition flex items-center gap-1">
-              details <span aria-hidden="true">{open ? '▴' : '▾'}</span>
-            </button>
+            <span className="flex items-center gap-2">{snapshotBtn}{detailsToggle()}</span>
           </div>
         )}
       </div>
@@ -209,9 +247,9 @@ export function FlightCard({ flight, myCode, myDoj, confirmedSet, onToggleConfir
       {open && (
         <div className="px-3 pb-3">
           {flight.queue.length > 0
-            ? <QueueTable result={result} myCode={myCode} confirmedSet={confirmedSet} onToggleConfirm={onToggleConfirm} />
+            ? <QueueTable result={result} myCode={myCode} confirmedSet={confirmedSet} onToggleConfirm={onToggleConfirm} readOnly={snapshot} />
             : <p className="text-[11px] text-stone-400 mt-1 border-t border-stone-100 pt-2">No queue data yet.</p>}
-          {actions && <FlightActions flight={flight} hidden={hidden} actions={actions} />}
+          {!snapshot && actions && <FlightActions flight={flight} hidden={hidden} actions={actions} />}
         </div>
       )}
     </div>

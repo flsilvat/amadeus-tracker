@@ -17,6 +17,8 @@ import Login from './components/Login.jsx';
 import Section, { CARD_W } from './components/Section.jsx';
 import AddTrip from './components/AddTrip.jsx';
 import { LOCAL_MODE } from './lib/local.js';
+import { copySheetImage, slug } from './lib/screenshot.js';
+import { CameraIcon } from './components/cards.jsx';
 
 const segBtn = (active) =>
   'px-3 py-1.5 text-xs font-semibold transition ' +
@@ -215,11 +217,55 @@ function Dashboard({ uid, demo, onSignOut }) {
   const inbound = useMemo(() => sortFlights(flights.filter((f) => dirOf(f) === 'inbound')), [flights, sortMode, myCode, myDoj, app.state]);
 
   const inCustom = view.kind === 'custom';
+  const viewName = inCustom ? (customGroup ? customGroup.name : 'Group') : (group ? group.name : 'Staff travel odds');
+  const outTitle = `Outbound${outbound[0] ? ' · ' + outbound[0].origin + ' → ' + outbound[0].destination : ''}`;
+  const inbTitle = `Inbound${inbound[0] ? ' · ' + inbound[0].origin + ' → ' + inbound[0].destination : ''}`;
+
+  // ---- copy as image: phone-width PNG of the cards onto the clipboard -----
+  // Cards that are open on screen export with their passenger queue; closed
+  // ones export collapsed. A download replaces the clipboard where the
+  // browser refuses the write (plain-http origin, denied permission).
+  const [toast, setToast] = useState(null); // { text, sticky }
+  useEffect(() => {
+    if (!toast || toast.sticky) return;
+    const t = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [toast]);
+  // 'phone' = one column at iPhone width; 'desktop' = masonry columns in a
+  // widescreen frame. Remembered per browser.
+  const [exportMode, setExportMode] = useState(() => {
+    try { return localStorage.getItem('amadeus-tracker-export-mode') === 'desktop' ? 'desktop' : 'phone'; } catch { return 'phone'; }
+  });
+  const pickExportMode = (m) => {
+    setExportMode(m);
+    try { localStorage.setItem('amadeus-tracker-export-mode', m); } catch { /* storage blocked: just not remembered */ }
+  };
+  const copyImage = async (sections, { title = null, filename }) => {
+    const list = sections.filter((s) => s.flights.length > 0);
+    if (!list.length) return;
+    setToast({ text: 'Creating image…', sticky: true });
+    try {
+      const how = await copySheetImage({
+        title, sections: list, mode: exportMode, myCode, myDoj,
+        confirmedSetFor: app.confirmedSetFor, isFavorite: app.isFavorite, isOpen: (k) => openFlights.has(k),
+      }, filename);
+      setToast({ text: how === 'clipboard' ? 'Image copied — paste it into your chat.' : 'Clipboard not available here, so the image was downloaded instead.' });
+    } catch (e) {
+      setToast({ text: 'Could not create the image: ' + (e && e.message ? e.message : e) });
+    }
+  };
+  const copyCard = (f) => copyImage([{ title: null, flights: [f] }], { filename: `${f.flightNo}-${f.isoDate}.png` });
+  const copySection = (title, list) =>
+    copyImage([{ title, flights: list }], { title: viewName, filename: `${slug(viewName)}-${slug(title.split(' ')[0])}.png` });
+  const copyAll = () =>
+    copyImage([{ title: outTitle, flights: outbound }, { title: inbTitle, flights: inbound }], { title: viewName, filename: `${slug(viewName)}.png` });
+
   const flightActions = {
     mode: inCustom ? 'custom' : 'trip',
     onHide: hideFlight,
     onRestore: restoreFlight,
     onRefresh: refreshFlight,
+    onSnapshot: copyCard,
     onRemoveFromGroup: removeFromGroup,
     // in trip view, offer "add to a group" only if at least one custom group exists
     customGroups: inCustom ? [] : customGroups,
@@ -240,9 +286,7 @@ function Dashboard({ uid, demo, onSignOut }) {
     <div className="max-w-[1320px] mx-auto px-3 py-5">
       <header className="mb-4 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-xl font-bold tracking-tight truncate">
-            {inCustom ? (customGroup ? customGroup.name : 'Group') : (group ? group.name : 'Staff travel odds')}
-          </h1>
+          <h1 className="text-xl font-bold tracking-tight truncate">{viewName}</h1>
           <p className="text-xs text-stone-500">
             {inCustom ? 'custom group · live odds' : 'staff travel odds'}{demo && <span className="ml-1 text-amber-600 font-semibold">· demo</span>}
           </p>
@@ -395,10 +439,30 @@ function Dashboard({ uid, demo, onSignOut }) {
               </div>
             )}
 
-            <button onClick={allOpen ? collapseAll : expandAll}
-              className="ml-auto self-end text-xs font-semibold border border-stone-300 rounded-lg px-3 py-1.5 bg-white text-stone-600 hover:bg-stone-50 transition">
-              {allOpen ? 'Collapse all' : 'Expand all'}
-            </button>
+            <div className="ml-auto flex flex-wrap items-end justify-end gap-2">
+              {flights.length > 0 && (
+                <>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide">Image</span>
+                    <div className="inline-flex rounded-lg border border-stone-300 overflow-hidden">
+                      <button onClick={() => pickExportMode('phone')} className={segBtn(exportMode === 'phone')}
+                        title="One column at iPhone width — reads full-size on a phone">Phone</button>
+                      <button onClick={() => pickExportMode('desktop')} className={segBtn(exportMode === 'desktop') + ' border-l border-stone-300'}
+                        title="Cards packed into columns in a widescreen frame">Desktop</button>
+                    </div>
+                  </div>
+                  <button onClick={copyAll}
+                    title="Copy every card on this page as one image"
+                    className="text-xs font-semibold border border-stone-300 rounded-lg px-3 py-1.5 bg-white text-stone-600 hover:bg-stone-50 transition flex items-center gap-1.5">
+                    <CameraIcon size={13} /> Copy image
+                  </button>
+                </>
+              )}
+              <button onClick={allOpen ? collapseAll : expandAll}
+                className="text-xs font-semibold border border-stone-300 rounded-lg px-3 py-1.5 bg-white text-stone-600 hover:bg-stone-50 transition">
+                {allOpen ? 'Collapse all' : 'Expand all'}
+              </button>
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-x-3 gap-y-1.5 mb-4 text-[11px]">
@@ -424,12 +488,12 @@ function Dashboard({ uid, demo, onSignOut }) {
             const inline = !isPhone && outbound.length > 0 && inbound.length > 0
               && total <= 4 && needW <= availW + SHRINK_BUDGET;
             const out = (
-              <Section title={`Outbound${outbound[0] ? ' · ' + outbound[0].origin + ' → ' + outbound[0].destination : ''}`}
-                flights={outbound} cols={cols} isPhone={isPhone} inline={inline} app={shared} myCode={myCode} myDoj={myDoj} />
+              <Section title={outTitle} flights={outbound} cols={cols} isPhone={isPhone} inline={inline}
+                app={shared} myCode={myCode} myDoj={myDoj} onSnapshot={copySection} />
             );
             const inb = (
-              <Section title={`Inbound${inbound[0] ? ' · ' + inbound[0].origin + ' → ' + inbound[0].destination : ''}`}
-                flights={inbound} cols={cols} isPhone={isPhone} inline={inline} app={shared} myCode={myCode} myDoj={myDoj} />
+              <Section title={inbTitle} flights={inbound} cols={cols} isPhone={isPhone} inline={inline}
+                app={shared} myCode={myCode} myDoj={myDoj} onSnapshot={copySection} />
             );
             return inline
               ? <div className="flex flex-wrap justify-center items-start gap-x-10">{out}{inb}</div>
@@ -444,6 +508,19 @@ function Dashboard({ uid, demo, onSignOut }) {
           )}
         </>
       )}
+      <Toast toast={toast} />
+    </div>
+  );
+}
+
+// Bottom-centre status pill for the copy-as-image actions.
+function Toast({ toast }) {
+  if (!toast) return null;
+  return (
+    <div role="status" aria-live="polite"
+      className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] rounded-full px-4 py-2 text-xs font-semibold text-white shadow-lg text-center"
+      style={{ backgroundColor: '#4a4640' }}>
+      {toast.text}
     </div>
   );
 }

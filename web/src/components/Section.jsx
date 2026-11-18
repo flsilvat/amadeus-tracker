@@ -1,8 +1,9 @@
-import { FlightCard } from './cards.jsx';
+import { FlightCard, CameraIcon } from './cards.jsx';
 
 export const CARD_W = 300; // fixed card width on desktop; phone uses one full-width column
 
-export default function Section({ title, flights, cols, isPhone, inline = false, app, myCode, myDoj }) {
+// onSnapshot(title, flights): copy this whole section as one image.
+export default function Section({ title, flights, cols, isPhone, inline = false, app, myCode, myDoj, onSnapshot }) {
   if (flights.length === 0) return null;
   const n = flights.length;
   // One-row layout only when the section genuinely fits within the chosen
@@ -32,7 +33,15 @@ export default function Section({ title, flights, cols, isPhone, inline = false,
     // inline: shrinks to content and sits beside the sibling section (the
     // parent flex row centres the pair and wraps on narrow windows)
     <div className="mb-7" style={inline ? { flex: '0 1 auto', minWidth: 0 } : undefined}>
-      <h2 className="text-xs font-bold text-stone-500 uppercase tracking-wide mb-2.5">{title}</h2>
+      <div className="flex items-center gap-2 mb-2.5">
+        <h2 className="text-xs font-bold text-stone-500 uppercase tracking-wide">{title}</h2>
+        {onSnapshot && (
+          <button onClick={() => onSnapshot(title, flights)} aria-label={`Copy ${title} as an image`} title="Copy this section as an image"
+            className="leading-none text-stone-300 hover:text-blue-600 transition">
+            <CameraIcon size={14} />
+          </button>
+        )}
+      </div>
       <div style={gridStyle}>
         {flights.map((f) => {
           const key = `${f.flightNo}_${f.isoDate}`;
