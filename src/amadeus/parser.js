@@ -37,13 +37,27 @@ const AN_FLIGHT_RE = new RegExp(
   'E\\d/([A-Z0-9]{3})',                 // (9) equipment
 );
 
+// Any numbered option line, whatever the carrier — marks where the previous
+// option's lines end.
+const AN_OPTION_START_RE = /^\s*\d+\s*(?:[A-Z0-9]{0,2}:)?\s*[A-Z0-9]{2}\s*\d{1,4}\s/;
+
+// Second (or later) flight segment of a connecting itinerary: a flight line
+// with NO option number — leading space(s) followed by an optional codeshare
+// prefix and a carrier + 3-4 digit flight number:
+//   "     BA 098  J3 ... /YYZ 3 LHR 5 ..."   (plain form)
+//   "  EI:BA5966  Y9 ... /DUB 2 LHR 2 ..."   (codeshare form)
+// Direct options carry the option number on their only flight line, and class
+// continuation lines never contain a 3-4 digit flight number, so neither
+// false-positives.
+const CONNECTION_SEGMENT_RE = /^ +(?:[A-Z0-9]{2}:)?[A-Z]{2} ?\d{3,4}\b/m;
+
 /**
  * Parses an AN response (possibly multi-page concatenation).
  */
 export function parseAN(text, ctx = {}) {
   const lines = String(text).split(/\r?\n/);
   const flights = [];
-  const seen = new Set();
+  const seen = new Map();
   let header = null;
 
   for (let i = 0; i < lines.length; i++) {
@@ -57,21 +71,32 @@ export function parseAN(text, ctx = {}) {
     if (!m) continue;
     const [, , codeshare, , digits, origin, destination, dep, arr, equipment] = m;
 
-    // Look ahead up to 3 lines for "OPERATED BY".
+    // Scan the rest of this option (up to the next numbered line) for
+    // "OPERATED BY" (first 3 lines only) and for an un-numbered flight
+    // segment, which means this line is just the first leg of a connection.
     let operatedBy = null;
-    for (let j = 1; j <= 3 && i + j < lines.length; j++) {
+    let isDirect = true;
+    for (let j = 1; i + j < lines.length; j++) {
       const look = lines[i + j];
-      if (AN_FLIGHT_RE.test(look)) break;
-      const op = /OPERATED BY (.+?)(?:\s+FOR\b|$)/.exec(look);
-      if (op) { operatedBy = op[1].trim(); break; }
+      if (AN_OPTION_START_RE.test(look)) break;
+      if (CONNECTION_SEGMENT_RE.test(look)) { isDirect = false; break; }
+      if (j <= 3 && !operatedBy) {
+        const op = /OPERATED BY (.+?)(?:\s+FOR\b|$)/.exec(look);
+        if (op) operatedBy = op[1].trim();
+      }
     }
 
     const flightNo = 'BA' + digits.padStart(4, '0');
     const key = `${flightNo}|${origin}|${destination}|${dep}|${arr}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const dup = seen.get(key);
+    if (dup) {
+      // Overlapping page copy: the earlier copy may have been cut off before
+      // the connecting segment, so trust whichever copy saw one.
+      if (!isDirect) dup.isDirect = false;
+      continue;
+    }
 
-    flights.push({
+    const flight = {
       flightNo,
       origin,
       destination,
@@ -80,11 +105,42 @@ export function parseAN(text, ctx = {}) {
       equipment,
       operatedBy,
       isBAOperated: !codeshare && !operatedBy,
+      isDirect,
       isoDate: ctx.isoDate ?? null,
-    });
+    };
+    seen.set(key, flight);
+    flights.push(flight);
   }
 
   return { flights, header };
+}
+
+/**
+ * Picks the flights to track for one requested leg out of parseAN's output.
+ *
+ * Normally that is "BA-operated flights on this exact airport pair":
+ *   1. BA-operated (not codeshare with another operator)
+ *   2. Origin matches the requested origin (rejects connecting flights via
+ *      other airports whose 1st leg happens to be BA)
+ *   3. Destination matches the requested destination (rejects first legs of
+ *      connections that end somewhere else)
+ *
+ * But Amadeus answers AN by CITY, so a request for an airport BA doesn't
+ * serve itself (e.g. ORY→LHR, where the only ORY flight is a Vueling
+ * codeshare) comes back with BA's flights from the city's other airport
+ * (CDG→LHR). When the exact pair has no BA-operated flight, fall back to
+ * those co-terminal direct flights instead of discovering nothing.
+ *
+ * @returns {{ selected: Array, coTerminal: boolean }}
+ */
+export function selectLegFlights(flights, origin, destination) {
+  const o = origin.toUpperCase();
+  const d = destination.toUpperCase();
+  const baOperated = flights.filter(f => f.isBAOperated);
+  const exact = baOperated.filter(f => f.origin === o && f.destination === d);
+  if (exact.length) return { selected: exact, coTerminal: false };
+  const alternates = baOperated.filter(f => f.isDirect);
+  return { selected: alternates, coTerminal: alternates.length > 0 };
 }
 
 // =============================================================================
@@ -323,15 +379,8 @@ export function sortQueueByPriority(queue) {
   return queue;
 }
 
-// True if an AN/ANBA display contains a connecting itinerary. Connections have a
-// second flight-segment line with NO option number — leading space(s) followed
-// by an optional codeshare prefix and a carrier + 3-4 digit flight number:
-//   "     BA 098  J3 ... /YYZ 3 LHR 5 ..."   (plain form)
-//   "  EI:BA5966  Y9 ... /DUB 2 LHR 2 ..."   (codeshare form)
-// Direct options carry the option number on their only flight line, and class
-// continuation lines never contain a 3-4 digit flight number, so neither
-// false-positives. Used to stop AN pagination once the direct flights end.
-const CONNECTION_SEGMENT_RE = /^ +(?:[A-Z0-9]{2}:)?[A-Z]{2} ?\d{3,4}\b/m;
+// True if an AN/ANBA display contains a connecting itinerary (see
+// CONNECTION_SEGMENT_RE). Used to stop AN pagination once the direct flights end.
 export function hasConnectingItinerary(text) {
   return CONNECTION_SEGMENT_RE.test(text || '');
 }

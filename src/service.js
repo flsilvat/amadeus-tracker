@@ -8,7 +8,7 @@
 import { enqueue } from './queue.js';
 import { runCommand, runCommandPaginated } from './amadeus/automator.js';
 import { buildAN, buildLL } from './amadeus/commandBuilder.js';
-import { parseAN, parseLL, sortQueueByPriority, hasConnectingItinerary } from './amadeus/parser.js';
+import { parseAN, parseLL, sortQueueByPriority, hasConnectingItinerary, selectLegFlights } from './amadeus/parser.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import {
@@ -58,17 +58,9 @@ export async function createOrUpdateGroupAndDiscover(groupSpec) {
     );
 
     const { flights } = parseAN(response, { isoDate: leg.date });
-    // Three filters to get to "direct BA-operated flights on this exact leg":
-    //   1. BA-operated (not codeshare with another operator)
-    //   2. Origin matches the leg's requested origin (rejects connecting
-    //      flights via other airports whose 1st leg happens to be BA)
-    //   3. Destination matches the leg's requested destination (rejects
-    //      first legs of connections that end somewhere else)
-    const directBA = flights.filter(f =>
-      f.isBAOperated &&
-      f.origin === leg.origin.toUpperCase() &&
-      f.destination === leg.destination.toUpperCase()
-    );
+    // Direct BA-operated flights on this exact leg — or, when BA doesn't
+    // operate that airport pair, on the same-city airports Amadeus returned.
+    const { selected: directBA, coTerminal } = selectLegFlights(flights, leg.origin, leg.destination);
 
     logger.info(
       {
@@ -77,6 +69,9 @@ export async function createOrUpdateGroupAndDiscover(groupSpec) {
         totalMatched: flights.length,
         directBA: directBA.length,
         rejected: flights.length - directBA.length,
+        ...(coTerminal && {
+          coTerminal: [...new Set(directBA.map(f => `${f.origin}-${f.destination}`))],
+        }),
       },
       'AN discovered'
     );
